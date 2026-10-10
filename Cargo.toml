@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hotmic-core", "crates/hotmic-cli"]
+members = ["crates/hotmic-core", "crates/hotmic-cli", "crates/hotmic-app"]
 
 [workspace.package]
 version = "0.1.0"

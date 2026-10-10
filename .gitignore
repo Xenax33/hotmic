@@ -24,3 +24,6 @@ Thumbs.db
 desktop.ini
 *.log
 target-alt/
+
+# Tauri generated schemas
+crates/hotmic-app/gen/

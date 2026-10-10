@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hotmic</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" id="engine-dot"></span>
+      <span class="name">Hotmic</span>
+      <span class="status" id="engine-status">starting</span>
+    </div>
+    <div class="meters">
+      <label>mic <span class="meter"><span id="meter-mic"></span></span></label>
+      <label>out <span class="meter"><span id="meter-out"></span></span></label>
+    </div>
+    <div class="actions">
+      <button id="btn-tone" title="Play a test tone">Test tone</button>
+      <button id="btn-stop" class="danger" title="Stop every playing clip">Stop all</button>
+      <button id="btn-engine">Stop engine</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main class="layout">
+    <aside class="side">
+      <section>
+        <h2>Devices</h2>
+        <label>Microphone
+          <select id="sel-mic"></select>
+        </label>
+        <label>Send to (virtual cable)
+          <select id="sel-cable"></select>
+        </label>
+        <label>Monitor (hear clips yourself)
+          <select id="sel-monitor"></select>
+        </label>
+        <label class="row"><input type="checkbox" id="chk-monitor" /> Monitor on</label>
+        <button id="btn-apply-devices">Apply and restart engine</button>
+        <p class="hint">In Discord set <b>Input Device</b> to <b>CABLE Output</b>.</p>
+      </section>
+
+      <section>
+        <h2>Levels</h2>
+        <label>Mic gain <span class="val" id="val-mic-gain"></span>
+          <input type="range" id="rng-mic-gain" min="0" max="2" step="0.05" />
+        </label>
+        <label>Clip gain <span class="val" id="val-clip-gain"></span>
+          <input type="range" id="rng-clip-gain" min="0" max="2" step="0.05" />
+        </label>
+        <label>Mic while clip plays <span class="val" id="val-duck"></span>
+          <input type="range" id="rng-duck" min="0" max="1" step="0.05" />
+        </label>
+        <label class="row"><input type="checkbox" id="chk-normalize" /> Normalise clip loudness</label>
+      </section>
+
+      <section>
+        <h2>Library</h2>
+        <button id="btn-add-files">Add files</button>
+        <button id="btn-add-folder">Add folder</button>
+        <p class="hint">Or drop audio files onto the window.</p>
+      </section>
+    </aside>
+
+    <section class="grid-wrap">
+      <div class="grid-head">
+        <input type="search" id="search" placeholder="Search clips" />
+        <span class="count" id="clip-count"></span>
+      </div>
+      <div class="grid" id="grid"></div>
+      <div class="empty hidden" id="empty">
+        <p>No clips yet.</p>
+        <p>Click <b>Add files</b> or drop MP3, WAV, OGG or FLAC files here.</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal hidden" id="modal">
+    <div class="modal-card">
+      <h3>Edit clip</h3>
+      <label>Name <input type="text" id="edit-name" /></label>
+      <label>Gain <span class="val" id="edit-gain-val"></span>
+        <input type="range" id="edit-gain" min="0" max="2" step="0.05" />
+      </label>
+      <label>Colour
+        <div class="swatches" id="edit-colors"></div>
+      </label>
+      <p class="path" id="edit-path"></p>
+      <div class="modal-actions">
+        <button class="danger" id="edit-remove">Remove</button>
+        <span class="spacer"></span>
+        <button id="edit-cancel">Cancel</button>
+        <button class="primary" id="edit-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
