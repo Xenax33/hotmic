@@ -1,0 +1,18 @@
+[package]
+name = "hotmic-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Audio engine for Hotmic: mic passthrough plus clip mixing into a virtual cable"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+cpal.workspace = true
+symphonia.workspace = true
+rubato.workspace = true
+rtrb.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true

@@ -25,6 +25,32 @@ Decoded clips (RAM) -----------+                                                
 v1 depends on [VB-Cable](https://vb-audio.com/Cable/) for the virtual microphone device. The
 app itself does the mic passthrough and mixing, so no Windows "Listen to this device" hacks.
 
+## Building
+
+Rust on Windows targets MSVC, so you need the Visual C++ build tools and the Windows SDK once:
+
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Then:
+
+```powershell
+cargo build --workspace
+cargo test -p hotmic-core
+cargo run -p hotmic-cli -- devices
+cargo run -p hotmic-cli -- run --mic "Headset Microphone" --cable "CABLE Input" --monitor ""
+```
+
+Build from PowerShell or cmd, not Git Bash: Git ships a GNU `link.exe` that shadows the MSVC
+linker on the PATH.
+
+Crates:
+
+- `crates/hotmic-core`: the engine. Device enumeration, clip decoding (symphonia), real-time
+  mixer, cpal streams with a resampling and drift-correcting mic path.
+- `crates/hotmic-cli`: keyboard driven test harness for the engine.
+
 ## Planned stack
 
 Rust core (cpal, symphonia, rubato) with a Tauri 2 UI. See PLAN.md for the reasoning and the

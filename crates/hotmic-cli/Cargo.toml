@@ -1,0 +1,15 @@
+[package]
+name = "hotmic-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command line test harness for the Hotmic audio engine"
+
+[dependencies]
+hotmic-core = { path = "../hotmic-core" }
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+clap.workspace = true
+crossterm = "0.29"
