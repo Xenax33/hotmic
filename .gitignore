@@ -1,0 +1,25 @@
+# Python (spike)
+.venv/
+__pycache__/
+*.pyc
+
+# User audio files are never committed
+spike/clips/*
+!spike/clips/.gitkeep
+
+# Rust
+target/
+Cargo.lock.bak
+
+# Tauri / Node
+node_modules/
+dist/
+src-tauri/gen/
+src-tauri/target/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.log

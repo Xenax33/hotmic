@@ -1,0 +1,5 @@
+numpy>=2.0
+sounddevice>=0.5
+soundfile>=0.13
+soxr>=0.5
+keyboard>=0.13
