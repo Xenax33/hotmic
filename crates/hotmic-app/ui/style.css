@@ -46,18 +46,19 @@ button:disabled { opacity: 0.5; cursor: default; }
   display: flex; align-items: center; gap: 20px; padding: 10px 16px;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
-.brand { display: flex; align-items: center; gap: 10px; min-width: 240px; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
 .brand .name { font-weight: 700; font-size: 16px; letter-spacing: 0.02em; }
-.brand .status { color: var(--muted); font-size: 12px; }
+.brand .status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 0 rgba(255,77,77,0.6); }
 .dot.on { background: var(--accent); animation: pulse 2s infinite; }
 .dot.err { background: var(--warn); }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,77,77,0.6); } 70% { box-shadow: 0 0 0 8px rgba(255,77,77,0); } 100% { box-shadow: 0 0 0 0 rgba(255,77,77,0); } }
-.meters { display: flex; gap: 16px; flex: 1; }
+.meters { display: flex; gap: 16px; flex: 0 0 auto; }
 .meters label { display: flex; align-items: center; gap: 8px; margin: 0; }
-.meter { display: inline-block; width: 140px; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.meter { display: inline-block; width: 120px; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
 .meter > span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--ok), var(--warn) 70%, var(--accent)); transition: width 80ms linear; }
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.actions button { white-space: nowrap; }
 
 .banner { padding: 8px 16px; background: #3a2a12; color: #ffd591; border-bottom: 1px solid #5a4320; font-size: 13px; }
 .banner.err { background: #3a1a1a; color: #ffb3b3; border-color: #5a2a2a; }

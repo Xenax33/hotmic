@@ -3,8 +3,9 @@
 A free, unlimited soundboard for Windows. Play any audio file into Discord, WhatsApp, Zoom or any
 other call while your microphone stays hot. Your voice and the clips are mixed, not swapped.
 
-Status: **Phase 1**. Routing is proven (see `spike/RESULTS.md`) and the Rust engine plays clips
-over the live mic into VB-Cable from a command line harness. No GUI yet.
+Status: **Phase 2**. Routing is proven (see `spike/RESULTS.md`), the Rust engine plays clips over
+the live mic into VB-Cable, and a first Tauri desktop app wraps it: device picker, clip grid,
+gains, meters, loudness normalisation. No global hotkeys or YouTube import yet.
 
 Planned headline features: unlimited clips, import straight from a YouTube URL with a time
 range, bind any key to any clip, loudness normalisation, mic ducking, instant replay of the
@@ -46,11 +47,22 @@ cargo run -p hotmic-cli -- run --mic "Headset Microphone" --cable "CABLE Input" 
 Build from PowerShell or cmd, not Git Bash: Git ships a GNU `link.exe` that shadows the MSVC
 linker on the PATH.
 
+Desktop app (Tauri 2, plain HTML frontend, no Node needed):
+
+```powershell
+cargo install tauri-cli --version "^2" --locked
+cargo run -p hotmic-app
+```
+
+Settings and the clip library live in `%APPDATA%\dev.hotmic.app\config.json`.
+
 Crates:
 
 - `crates/hotmic-core`: the engine. Device enumeration, clip decoding (symphonia), real-time
-  mixer, cpal streams with a resampling and drift-correcting mic path.
+  mixer, cpal streams with a resampling and drift-correcting mic path, loudness normalisation.
 - `crates/hotmic-cli`: keyboard driven test harness for the engine.
+- `crates/hotmic-app`: the Tauri shell. `src/lib.rs` holds state, persistence and the commands;
+  `ui/` is the frontend.
 
 ## Planned stack
 

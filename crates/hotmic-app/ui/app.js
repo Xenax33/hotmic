@@ -54,11 +54,14 @@ function fillSelect(sel, list, current, allowNone) {
     o.textContent = d.name + (d.is_default_input || d.is_default_output ? "  (default)" : "");
     sel.appendChild(o);
   }
-  // current may be an id, a name substring, or empty
+  // current may be an id, a name substring, or empty (= system default)
   let match = list.find((d) => d.id === current);
   if (!match && current) {
     const c = current.toLowerCase();
     match = list.find((d) => d.name.toLowerCase().includes(c));
+  }
+  if (!match && !current && !allowNone) {
+    match = list.find((d) => d.is_default_input || d.is_default_output) || list[0];
   }
   sel.value = match ? match.id : "";
 }
@@ -141,7 +144,9 @@ function renderStatus() {
   if (!status) return;
   if (status.running) {
     dot.className = "dot on";
-    txt.textContent = `${status.mic_name}  ->  ${status.cable_name}` + (status.monitor_on ? "  + monitor" : "");
+    const short = (n) => (n || "").replace(/\s*\(.*\)\s*$/, "");
+    txt.textContent = `${short(status.mic_name)} to ${short(status.cable_name)}` + (status.monitor_on ? ", monitor on" : "");
+    txt.title = `${status.mic_name} to ${status.cable_name}`;
     $("btn-engine").textContent = "Stop engine";
   } else {
     dot.className = status.error ? "dot err" : "dot";
