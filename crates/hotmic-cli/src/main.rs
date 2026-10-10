@@ -50,6 +50,9 @@ enum Cmd {
         /// Times (seconds) at which headless mode plays the tone, comma separated.
         #[arg(long, default_value = "0.5,2.5", value_delimiter = ',')]
         tone_times: Vec<f32>,
+        /// In headless mode, play this clip (1-based index into the clips folder) instead of the tone.
+        #[arg(long)]
+        headless_clip: Option<usize>,
     },
 }
 
@@ -61,6 +64,7 @@ struct RunOpts {
     params: MixerParams,
     headless_secs: Option<f32>,
     tone_times: Vec<f32>,
+    headless_clip: Option<usize>,
 }
 
 fn main() -> Result<()> {
@@ -78,6 +82,7 @@ fn main() -> Result<()> {
             duck,
             headless_secs,
             tone_times,
+            headless_clip,
         } => cmd_run(RunOpts {
             mic,
             cable,
@@ -91,6 +96,7 @@ fn main() -> Result<()> {
             },
             headless_secs,
             tone_times,
+            headless_clip,
         }),
     }
 }
@@ -163,8 +169,19 @@ fn load_folder(dir: &PathBuf) -> Vec<Arc<Clip>> {
             continue;
         }
         match Clip::load(&p) {
-            Ok(c) => {
-                println!("  [{}] {} ({:.1}s)", out.len() + 1, c.name, c.duration_secs());
+            Ok(mut c) => {
+                let gain = c.normalize(
+                    hotmic_core::clip::DEFAULT_TARGET_RMS,
+                    hotmic_core::clip::DEFAULT_PEAK_CEILING,
+                );
+                println!(
+                    "  [{}] {} ({:.1}s, normalised x{:.2}, peak {:.2})",
+                    out.len() + 1,
+                    c.name,
+                    c.duration_secs(),
+                    gain,
+                    c.peak()
+                );
                 out.push(Arc::new(c));
             }
             Err(e) => println!("  skipped {}: {e:#}", p.display()),
@@ -227,11 +244,20 @@ fn cmd_run(opts: RunOpts) -> Result<()> {
             .map(|&s| Duration::from_secs_f32(s.max(0.0)))
             .collect();
         tone_times.sort();
+        let what: Arc<Clip> = match opts.headless_clip {
+            Some(n) if n >= 1 && n <= clips.len() => clips[n - 1].clone(),
+            Some(n) => anyhow::bail!("no clip number {n}, folder has {}", clips.len()),
+            None => tone.clone(),
+        };
         while started.elapsed().as_secs_f32() < secs {
             while tone_times.first().is_some_and(|&t| started.elapsed() > t) {
                 tone_times.remove(0);
-                let id = engine.play(tone.clone());
-                println!("  t={:.2}s play tone -> voice {id}", started.elapsed().as_secs_f32());
+                let id = engine.play(what.clone());
+                println!(
+                    "  t={:.2}s play {} -> voice {id}",
+                    started.elapsed().as_secs_f32(),
+                    what.name
+                );
             }
             drain_events(&engine, &mut underruns, &mut overruns);
             if last_report.elapsed() > Duration::from_secs(1) {

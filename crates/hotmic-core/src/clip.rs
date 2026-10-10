@@ -81,6 +81,22 @@ impl Clip {
         Clip::from_samples(format!("tone {freq_hz:.0} Hz"), samples)
     }
 
+    /// Loudness-normalise in place: bring the gated RMS to `target_rms` (linear, e.g. 0.125 for
+    /// -18 dBFS) without letting the peak exceed `peak_ceiling`. Silence-ish windows (below
+    /// -45 dBFS) are ignored when measuring, so a mostly quiet clip with one loud burst is
+    /// judged by the burst, not pulled up into distortion.
+    pub fn normalize(&mut self, target_rms: f32, peak_ceiling: f32) -> f32 {
+        let gain = normalization_gain(&self.samples, target_rms, peak_ceiling);
+        if (gain - 1.0).abs() > 1e-3 {
+            let mut v: Vec<f32> = self.samples.to_vec();
+            for s in &mut v {
+                *s *= gain;
+            }
+            self.samples = v.into();
+        }
+        gain
+    }
+
     pub fn frames(&self) -> usize {
         self.samples.len() / CHANNELS
     }
@@ -92,6 +108,37 @@ impl Clip {
     pub fn peak(&self) -> f32 {
         self.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
     }
+}
+
+/// Default normalisation target: -18 dBFS RMS over the non-silent parts.
+pub const DEFAULT_TARGET_RMS: f32 = 0.125;
+/// Default peak ceiling after normalisation (-0.5 dBFS). The mixer's soft clipper sits above it.
+pub const DEFAULT_PEAK_CEILING: f32 = 0.94;
+
+/// Gain that brings the gated RMS of `samples` to `target_rms`, capped so the peak stays
+/// at or below `peak_ceiling`. Returns 1.0 for silent input.
+pub fn normalization_gain(samples: &[f32], target_rms: f32, peak_ceiling: f32) -> f32 {
+    const WINDOW: usize = 4800; // 100 ms of stereo frames
+    const GATE: f32 = 0.0056; // about -45 dBFS RMS
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for w in samples.chunks(WINDOW * CHANNELS) {
+        let e: f64 = w.iter().map(|&s| (s as f64) * (s as f64)).sum();
+        let rms = (e / w.len() as f64).sqrt() as f32;
+        if rms > GATE {
+            sum += e;
+            count += w.len();
+        }
+    }
+    if count == 0 {
+        return 1.0;
+    }
+    let rms = (sum / count as f64).sqrt() as f32;
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if rms <= 0.0 || peak <= 0.0 {
+        return 1.0;
+    }
+    (target_rms / rms).min(peak_ceiling / peak)
 }
 
 /// Returns (interleaved samples, sample rate, channel count).
@@ -195,6 +242,31 @@ mod tests {
         assert_eq!(c.frames(), 24_000);
         assert!((c.duration_secs() - 0.5).abs() < 1e-6);
         assert!(c.peak() <= 0.4 && c.peak() > 0.3);
+    }
+
+    #[test]
+    fn normalize_raises_quiet_clip_and_respects_ceiling() {
+        // quiet sine at 0.05 peak -> rms 0.035; target 0.125 wants gain 3.5, peak allows 0.94/0.05
+        let mut c = Clip::tone(440.0, 0.2);
+        let mut v: Vec<f32> = c.samples.to_vec();
+        for s in &mut v {
+            *s *= 0.05 / 0.4;
+        }
+        c.samples = v.into();
+        let before = c.peak();
+        let g = c.normalize(DEFAULT_TARGET_RMS, DEFAULT_PEAK_CEILING);
+        assert!(g > 1.5, "gain {g}");
+        assert!(c.peak() > before);
+        assert!(c.peak() <= DEFAULT_PEAK_CEILING + 1e-4);
+
+        // loud square-ish clip: peak 0.9, rms 0.9 -> would need gain < 1, ceiling not the limit
+        let mut loud = Clip::from_samples("loud", vec![0.9; 9600]);
+        let g2 = loud.normalize(DEFAULT_TARGET_RMS, DEFAULT_PEAK_CEILING);
+        assert!((g2 - 0.125 / 0.9).abs() < 1e-3, "gain {g2}");
+
+        // silence stays silence, gain 1
+        let mut quiet = Clip::from_samples("quiet", vec![0.0; 9600]);
+        assert_eq!(quiet.normalize(DEFAULT_TARGET_RMS, DEFAULT_PEAK_CEILING), 1.0);
     }
 
     #[test]

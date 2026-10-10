@@ -23,3 +23,4 @@ src-tauri/target/
 Thumbs.db
 desktop.ini
 *.log
+target-alt/
