@@ -133,7 +133,7 @@ fn decode(path: &Path) -> Result<(Vec<f32>, u32, usize)> {
             Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e.into()),
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         match decoder.decode(&packet) {

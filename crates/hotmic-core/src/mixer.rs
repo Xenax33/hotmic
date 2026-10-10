@@ -172,7 +172,6 @@ impl Mixer {
                         if done {
                             // Fade finished mid-block; stop writing this voice.
                             v.pos += n;
-                            written += n;
                             break;
                         }
                     }

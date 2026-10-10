@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{FromSample, SizedSample};
+use cpal::{FromSample, Sample, SizedSample};
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
@@ -160,9 +160,6 @@ impl Engine {
         let ring_frames = (SAMPLE_RATE as f32 * RING_SECONDS) as usize;
         let (mut mic_prod, mut mic_cons) = rtrb::RingBuffer::<f32>::new(ring_frames * CHANNELS);
         let target_fill = ((cfg.mic_buffer_ms / 1000.0) * SAMPLE_RATE as f32) as usize;
-        for _ in 0..target_fill * CHANNELS {
-            let _ = mic_prod.push(0.0);
-        }
 
         // Monitor ring: clips only.
         let (mut mon_prod, mut mon_cons) = rtrb::RingBuffer::<f32>::new(ring_frames * CHANNELS);
@@ -176,7 +173,13 @@ impl Engine {
             let mut stage = MicStage::new(mic_channels as usize, mic_rate, target_fill, levels);
             let stream_cfg: cpal::StreamConfig = mic_cfg.clone().into();
             let err_tx = event_tx.clone();
+            let started = std::time::Instant::now();
             let err_fn = move |e: cpal::Error| {
+                // WASAPI flags a discontinuity on the very first capture buffer; not a real problem.
+                if e.kind() == cpal::ErrorKind::Xrun && started.elapsed() < Duration::from_secs(1) {
+                    log::debug!("ignoring startup xrun on mic stream: {e}");
+                    return;
+                }
                 let _ = err_tx.try_send(Event::StreamError {
                     stream: "mic",
                     message: e.to_string(),
@@ -328,8 +331,19 @@ impl Engine {
             streams.push(stream);
         }
 
-        for s in &streams {
-            s.play().context("starting stream")?;
+        // Start the mic first and let the ring reach its target fill, so the output never starts
+        // on an empty buffer and the resampler's warm-up is absorbed before anyone listens.
+        streams[0].play().context("starting mic stream")?;
+        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+        while (levels.ring_fill.load(Ordering::Relaxed) as usize) < target_fill {
+            if std::time::Instant::now() > deadline {
+                log::warn!("mic did not deliver {target_fill} frames within 1 s, starting anyway");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        for s in &streams[1..] {
+            s.play().context("starting output stream")?;
         }
 
         Ok(Engine {
@@ -442,7 +456,16 @@ struct MicStage {
     target_fill: usize,
     levels: Arc<Levels>,
     steps: u32,
+    /// Integral term of the drift controller, in normalised fill error.
+    integral: f64,
+    /// Smoothed ring fill in frames. The raw value jumps by a whole callback block each time
+    /// either side runs, which would otherwise feed noise into the controller.
+    fill_avg: f64,
 }
+
+/// Drift controller gains. Error is (fill - target) / target, evaluated every 16 resample chunks.
+const DRIFT_KP: f64 = 0.002;
+const DRIFT_KI: f64 = 0.0002;
 
 impl MicStage {
     fn new(channels: usize, rate: u32, target_fill: usize, levels: Arc<Levels>) -> MicStage {
@@ -474,6 +497,8 @@ impl MicStage {
             target_fill,
             levels,
             steps: 0,
+            integral: 0.0,
+            fill_avg: target_fill as f64,
         }
     }
 
@@ -529,13 +554,22 @@ impl MicStage {
             self.stage_len -= consumed_total;
         }
 
-        // Drift control: nudge the ratio so the ring buffer hovers around target_fill.
+        // Publish the fill level from this side too, so start-up can wait for it.
+        let fill_frames = (prod.buffer().capacity() - prod.slots()) / CHANNELS;
+        self.levels
+            .ring_fill
+            .store(fill_frames as u32, Ordering::Relaxed);
+
+        // Drift control (PI): nudge the ratio so the ring buffer settles at target_fill.
+        self.fill_avg += 0.05 * (fill_frames as f64 - self.fill_avg);
         self.steps += 1;
         if self.steps % 16 == 0 {
-            let fill = self.levels.ring_fill.load(Ordering::Relaxed) as f64;
             let target = self.target_fill.max(1) as f64;
-            let error = (fill - target) / target; // positive = too much queued
-            let rel = (1.0 - error * 0.002).clamp(1.0 - MAX_RATIO_DEVIATION, 1.0 + MAX_RATIO_DEVIATION);
+            let error = (self.fill_avg - target) / target; // positive = too much queued
+            let i_limit = MAX_RATIO_DEVIATION / DRIFT_KI;
+            self.integral = (self.integral + error).clamp(-i_limit, i_limit);
+            let rel = (1.0 - error * DRIFT_KP - self.integral * DRIFT_KI)
+                .clamp(1.0 - MAX_RATIO_DEVIATION, 1.0 + MAX_RATIO_DEVIATION);
             let _ = self.resampler.set_resample_ratio(self.nominal_ratio * rel, true);
             self.levels
                 .ratio_ppm

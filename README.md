@@ -3,7 +3,8 @@
 A free, unlimited soundboard for Windows. Play any audio file into Discord, WhatsApp, Zoom or any
 other call while your microphone stays hot. Your voice and the clips are mixed, not swapped.
 
-Status: **Phase 0**, proving the audio routing. Nothing usable yet.
+Status: **Phase 1**. Routing is proven (see `spike/RESULTS.md`) and the Rust engine plays clips
+over the live mic into VB-Cable from a command line harness. No GUI yet.
 
 Planned headline features: unlimited clips, import straight from a YouTube URL with a time
 range, bind any key to any clip, loudness normalisation, mic ducking, instant replay of the
