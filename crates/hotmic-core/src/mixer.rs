@@ -257,6 +257,37 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_voices_stack_and_each_finishes() {
+        let mut m = Mixer::new(8);
+        m.params.clip_gain = 1.0;
+        let c = clip(6, 0.25); // 6 frames
+        let mic = vec![0.0f32; 4 * CHANNELS]; // 4 frames per block
+        let mut out = vec![0.0; 4 * CHANNELS];
+        let mut clips = vec![0.0; 4 * CHANNELS];
+
+        m.play(Voice::new(1, c.clone(), 1.0, false));
+        m.process(&mic, &mut out, &mut clips); // voice 1 at frame 4 of 6
+        assert!(out.iter().all(|&s| (s - 0.25).abs() < 1e-6));
+
+        m.play(Voice::new(2, c.clone(), 1.0, false));
+        m.play(Voice::new(3, c.clone(), 1.0, false));
+        m.clear_finished();
+        m.process(&mic, &mut out, &mut clips);
+        // frames 0-1: voices 1,2,3 = 0.75; frames 2-3: voices 2,3 = 0.5
+        assert!((out[0] - 0.75).abs() < 1e-6, "got {}", out[0]);
+        assert!((out[2 * CHANNELS] - 0.5).abs() < 1e-6, "got {}", out[2 * CHANNELS]);
+        assert_eq!(m.take_finished(), &[1]);
+        assert_eq!(m.active(), 2);
+
+        m.clear_finished();
+        m.process(&mic, &mut out, &mut clips); // voices 2,3 finish (frames 4-5), then silence
+        assert!((out[0] - 0.5).abs() < 1e-6);
+        assert_eq!(out[2 * CHANNELS], 0.0);
+        assert_eq!(m.active(), 0);
+        assert_eq!(m.take_finished().len(), 2);
+    }
+
+    #[test]
     fn looping_voice_wraps() {
         let mut m = Mixer::new(4);
         m.params.clip_gain = 1.0;

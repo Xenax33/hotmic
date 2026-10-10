@@ -44,9 +44,12 @@ enum Cmd {
         /// Mic multiplier while a clip plays (1.0 = no ducking).
         #[arg(long, default_value_t = 1.0)]
         duck: f32,
-        /// Seconds to run without a keyboard (for scripted tests). Plays a tone at t=0.5s.
+        /// Seconds to run without a keyboard (for scripted tests).
         #[arg(long)]
         headless_secs: Option<f32>,
+        /// Times (seconds) at which headless mode plays the tone, comma separated.
+        #[arg(long, default_value = "0.5,2.5", value_delimiter = ',')]
+        tone_times: Vec<f32>,
     },
 }
 
@@ -57,6 +60,7 @@ struct RunOpts {
     clips_dir: PathBuf,
     params: MixerParams,
     headless_secs: Option<f32>,
+    tone_times: Vec<f32>,
 }
 
 fn main() -> Result<()> {
@@ -73,6 +77,7 @@ fn main() -> Result<()> {
             clip_gain,
             duck,
             headless_secs,
+            tone_times,
         } => cmd_run(RunOpts {
             mic,
             cable,
@@ -85,6 +90,7 @@ fn main() -> Result<()> {
                 block_voice: false,
             },
             headless_secs,
+            tone_times,
         }),
     }
 }
@@ -215,12 +221,17 @@ fn cmd_run(opts: RunOpts) -> Result<()> {
     let started = Instant::now();
 
     if let Some(secs) = opts.headless_secs {
-        // Two tones, so repeated playback through the monitor path gets exercised too.
-        let mut tone_times = vec![Duration::from_millis(500), Duration::from_millis(2500)];
+        let mut tone_times: Vec<Duration> = opts
+            .tone_times
+            .iter()
+            .map(|&s| Duration::from_secs_f32(s.max(0.0)))
+            .collect();
+        tone_times.sort();
         while started.elapsed().as_secs_f32() < secs {
-            if tone_times.first().is_some_and(|&t| started.elapsed() > t) {
+            while tone_times.first().is_some_and(|&t| started.elapsed() > t) {
                 tone_times.remove(0);
-                engine.play(tone.clone());
+                let id = engine.play(tone.clone());
+                println!("  t={:.2}s play tone -> voice {id}", started.elapsed().as_secs_f32());
             }
             drain_events(&engine, &mut underruns, &mut overruns);
             if last_report.elapsed() > Duration::from_secs(1) {
@@ -263,7 +274,8 @@ fn interactive_loop(
                 match k.code {
                     KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
                     KeyCode::Char('t') | KeyCode::Char('T') => {
-                        engine.play(tone.clone());
+                        let id = engine.play(tone.clone());
+                        println!("tone -> voice {id}\r");
                     }
                     KeyCode::Char('0') => engine.stop_all(),
                     KeyCode::Char('m') | KeyCode::Char('M') => {
