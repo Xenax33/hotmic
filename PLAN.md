@@ -144,7 +144,11 @@ Only worth it if you want zero third-party installs. Signing paths:
 
 ## 5. Known gotchas (collected from the research)
 
-- **Discord Krisp noise suppression kills music.** Must be off. Document it in the wizard.
+- **Discord Krisp noise suppression kills music.** Pure tones vanish completely, speech clips
+  mostly survive, music gets thinned. Confirmed 2026-10-11 with real clips.
+- **Discord voice activity gating cuts clip parts even with Krisp off.** Discord's VAD uses
+  Krisp's voice detector (`vadUseKrisp`), so non-speech sections are muted mid-clip. Fix is
+  push-to-talk held during playback (auto-PTT feature) or Hotmic doing the mic cleanup itself.
 - **Feedback loop** if monitor output goes to speakers near the mic. Default monitor to off, warn
   when the monitor device is not headphones.
 - **Sample-rate mismatch** between the cable, the mic, and Discord causes drift or Windows
@@ -235,6 +239,12 @@ pressing the keys, with conflict warnings. Numpad keys are first-class and show 
 
 Tier 1, do these, they are cheap and make it feel finished:
 
+- **Auto push-to-talk**: while a clip plays, Hotmic holds the user's Discord PTT key (SendInput).
+  Sidesteps Discord's voice-activity gating, which otherwise cuts non-speech parts of clips
+  even with noise suppression off. Soundpad has this; users expect it.
+- **Built-in mic cleanup**: RNNoise (pure Rust port `nnnoiseless`) on the mic path before the
+  mix, later echo cancellation and gain control via WebRTC's audio processing module. Lets
+  users turn Discord's Krisp off without losing a clean voice, so clips pass untouched.
 - **Loudness normalisation** on import (EBU R128 to about -16 LUFS) so one clip is not ten
   times louder than the next. Fixes the number one complaint about soundboards.
 - **Mic ducking**: lower your voice by N dB while a clip plays, so clips cut through.
@@ -260,6 +270,9 @@ Tier 2, strong differentiators:
 - **Clip editor**: waveform, trim, fade, gain, loop region, split one long file into many clips.
 - **Profiles**: different grids and hotkeys per game or app, auto-switch on foreground window.
 - **Portable mode**: everything next to the exe on a USB stick.
+- **Discord bot mode**: Hotmic joins the voice channel as a local bot and streams clips as a
+  separate participant, like Discord's own soundboard. Bypasses all mic processing, keeps the
+  user's Discord settings untouched. Only works in servers where the bot can be added.
 
 Tier 3, later or community-driven:
 
