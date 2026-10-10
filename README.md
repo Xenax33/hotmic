@@ -5,6 +5,10 @@ other call while your microphone stays hot. Your voice and the clips are mixed, 
 
 Status: **Phase 0**, proving the audio routing. Nothing usable yet.
 
+Planned headline features: unlimited clips, import straight from a YouTube URL with a time
+range, bind any key to any clip, loudness normalisation, mic ducking, instant replay of the
+last 30 seconds, and a phone remote. See [PLAN.md](PLAN.md) sections 7 to 9.
+
 - [PLAN.md](PLAN.md): research, architecture decision, phases, known gotchas.
 - [spike/](spike/): Python proof of routing (mic + clips into a virtual cable).
 

@@ -10,6 +10,10 @@ A Windows desktop app that:
 - Plays a clip on click or global hotkey into the microphone that Discord, WhatsApp, Zoom etc. are listening to.
 - Keeps your real microphone live the whole time. Voice and clip are mixed, not swapped.
 - Optionally also plays the clip into your own headphones so you hear what the others hear.
+- Imports clips straight from a YouTube URL: paste a link, optionally pick a time range, get an
+  MP3 in your collection. See section 7.
+- Binds any key (plain `1`, `2`, `3` or combos) to a clip, with a layer system so bare keys do
+  not break typing in other apps. See section 8.
 - Has no file limit and no subscription. Local only, open source friendly.
 
 ## 2. How "playing through the mic" actually works on Windows
@@ -110,7 +114,9 @@ downstream matters.
 - Library: add files or whole folders, drag and drop, folders/tabs, search, rename, colour tag.
   Watch folders for new files.
 - Buttons grid with play progress, per-clip volume, loop toggle, right-click to assign hotkey.
-- Global hotkeys per clip plus a Stop All key and a Push-To-Play key.
+- Global hotkeys per clip plus a Stop All key and a Push-To-Play key. Full design in section 8.
+- YouTube import box in the library view (section 7). Ships in this phase because it is the
+  main way clips get into the collection.
 - Settings: mic device, cable device, monitor device, master gains, duck amount, start minimised
   to tray, autostart with Windows.
 - First-run wizard: detect VB-Cable, link to download if missing, show the two Discord settings
@@ -118,14 +124,13 @@ downstream matters.
   arrives).
 - Live meters for mic and output so you can see it working.
 
-### Phase 3: polish (ongoing)
+### Phase 3: polish and the features that make it worth sharing (ongoing)
 
 - Waveform view with trim handles, fade in/out per clip.
 - Import from the folders of the paid app you use today.
 - Profiles (one library for Discord, one for streaming).
-- Optional: capture another app's audio with WASAPI process loopback (Windows 10 2004+) so
-  YouTube or Spotify can be sent into the call too. CommonMik does exactly this.
-- Installer via `tauri-bundler` (MSI/NSIS), winget manifest.
+- Installer via `tauri-bundler` (MSI/NSIS), winget manifest, GitHub Releases with auto-update.
+- Then pick from the feature list in section 9, roughly in the order given there.
 
 ### Phase 4 (optional, later): own virtual microphone
 
@@ -163,7 +168,111 @@ Only worth it if you want zero third-party installs. Signing paths:
    "CABLE Input" while passing the mic through.
 4. Only then start the Tauri UI.
 
-## 7. Sources consulted
+## 7. Feature design: YouTube import
+
+User flow: paste a URL (or drag a link onto the window), see title and duration, optionally set
+start and end times, click Import. A progress bar runs, and the clip appears in the library with
+the video title as its name and the thumbnail as its button art.
+
+### How
+
+- **yt-dlp** does the download. It is the de facto standard, Unlicense, ships a standalone
+  `yt-dlp.exe`, and has a `-U` self-update because YouTube breaks downloaders every few months.
+- **ffmpeg** is required by yt-dlp both for MP3 conversion (`-x --audio-format mp3`) and for
+  time-range trimming (`--download-sections "*1:20-1:25"`). Use an LGPL static build.
+- Both are run as **Tauri sidecars** (`tauri-plugin-shell`, `bundle.externalBin`, binaries named
+  with the `-x86_64-pc-windows-msvc.exe` suffix). Lock the shell capability down to those two
+  binaries with argument validators so the UI cannot pass arbitrary flags.
+- Command the app runs, roughly:
+
+  ```
+  yt-dlp -x --audio-format mp3 --audio-quality 0 --download-sections "*START-END" \
+         --no-playlist --embed-thumbnail -o "<library>/%(title)s.%(ext)s" <URL>
+  ```
+
+- Parse yt-dlp's progress lines from stdout to drive the progress bar. Run `yt-dlp -U` in the
+  background on a weekly timer and expose a "Update downloader" button.
+- Also accept any URL yt-dlp supports (SoundCloud, Twitter, Twitch clips, direct MP3 links). No
+  extra work, it is the same command.
+
+### Decisions and caveats
+
+- Bundling adds roughly 100 MB for ffmpeg plus 17 MB for yt-dlp. Alternative: download them on
+  first use into `%LOCALAPPDATA%\hotmic\bin` with SHA-256 checks. Decide at Phase 2 based on
+  how big the installer feels. Start with bundling, it is simpler and works offline.
+- A pure-Rust path exists (rustypipe) but it needs a separate "botguard" helper binary and its
+  last release was April 2025. Not worth the risk, yt-dlp has far more eyes on it.
+- Storing in MP3 is a re-encode (YouTube serves Opus or AAC). Quality loss is inaudible for a
+  soundboard. If you ever want lossless, keep the original Opus and let symphonia decode it.
+- Legal note for the README: YouTube's terms forbid downloading except where they provide a
+  button. This feature is for personal use of content you have the right to use. Same stance
+  as every other open-source tool in this space.
+
+## 8. Feature design: hotkeys
+
+Requirements: bind a clip to a plain key like `1`, `2`, `3`, or to combos like `Ctrl+Alt+F5`.
+Hotkeys must work while Discord or a game has focus.
+
+The problem with plain keys: a global `1` binding swallows the key everywhere, so you can no
+longer type "1" in chat. Three modes, user picks per profile:
+
+| Mode | Behaviour | Good for |
+|---|---|---|
+| **Combo** (default) | Only modifier combos are global, e.g. `Ctrl+Alt+1`. | Never interferes with typing. |
+| **Layer key** | Hold a chosen key (CapsLock, Right Alt, a mouse side button) and bare keys fire clips. Release and the keyboard is normal again. | Fast, no conflicts, one hand. |
+| **Hot mode toggle** | A key (default `Scroll Lock`) toggles "hot mode". While on, bare keys `1`..`9`, `0`, `Numpad*` fire clips and a tray icon turns red. | Gaming sessions where you never type. |
+
+Implementation: `tauri-plugin-global-shortcut` handles combo mode. Layer and toggle modes need a
+low-level keyboard hook (`SetWindowsHookEx(WH_KEYBOARD_LL)` via the `windows` crate) so the app
+can see bare keys and swallow them only while the layer is active. Same hook gives key-up for
+"hold to play, release to stop" clips.
+
+Extras in the same system: a Stop All key, a Push-To-Play key, "toggle mic" key, and an optional
+"press again to stop" behaviour per clip. Record a hotkey by clicking the clip's key field and
+pressing the keys, with conflict warnings. Numpad keys are first-class and show as `Num1`.
+
+## 9. Feature ideas (ranked)
+
+Tier 1, do these, they are cheap and make it feel finished:
+
+- **Loudness normalisation** on import (EBU R128 to about -16 LUFS) so one clip is not ten
+  times louder than the next. Fixes the number one complaint about soundboards.
+- **Mic ducking**: lower your voice by N dB while a clip plays, so clips cut through.
+- **Instant replay**: keep the last 30 seconds of desktop audio and of your mic in a ring buffer.
+  Press a key, and "that thing someone just said" becomes a clip. Needs WASAPI loopback capture,
+  which is already in cpal. This is the killer feature nobody free has.
+- **Record a clip** directly from the mic, with trim afterwards.
+- **Search, tags, favourites, colours, emoji icons** on buttons. Folders map to tabs.
+- **Fade out on stop** instead of a hard cut, and **crossfade** when one clip replaces another.
+- **Random from folder**: one hotkey, random clip from a folder. Meme boards love this.
+- **Import and export sound packs** as zip with a manifest, so packs can be shared on GitHub.
+
+Tier 2, strong differentiators:
+
+- **Phone remote**: the app runs a tiny local HTTP server, your phone opens a page on the LAN
+  and shows the button grid. A free Stream Deck. Protect with a pairing code.
+- **Stream Deck and MIDI pad support** via the same local API.
+- **Local text-to-speech clips** with Piper (fully offline, fits the local ethos): type a line,
+  get a clip.
+- **Desktop audio to call**: send Spotify or a browser tab into the call with per-app WASAPI
+  process loopback, like CommonMik. Fits the mixer naturally.
+- **Pitch and speed knobs** per clip, with a "chipmunk" and "slowed" preset. Cheap with rubato.
+- **Clip editor**: waveform, trim, fade, gain, loop region, split one long file into many clips.
+- **Profiles**: different grids and hotkeys per game or app, auto-switch on foreground window.
+- **Portable mode**: everything next to the exe on a USB stick.
+
+Tier 3, later or community-driven:
+
+- Linux support via PipeWire (the virtual mic is free there, no VB-Cable needed). Keep the core
+  platform-agnostic from day one so this stays possible.
+- Plugin or scripting hooks (a clip triggers an HTTP call, OBS scene change, etc.).
+- Playlists and sequences (play A then B), timed loops.
+- Own virtual mic driver (Phase 4) to remove the VB-Cable install.
+- Localisation and full keyboard accessibility.
+
+Deliberately not doing: cloud accounts, telemetry, built-in sound store, AI voice changer.
+
+## 10. Sources consulted
 
 - Soundpad product page and Steam thread on its driver extension and recording-device requirement.
 - Soundux GitHub (GPL-3, plays to VB-Cable on Windows, installer bundles VB-Cable).
@@ -173,3 +282,6 @@ Only worth it if you want zero third-party installs. Signing paths:
 - Microsoft docs: kernel-mode code signing, Hardware Dev Center attestation, APO overview.
 - cpal 0.18, symphonia 0.6, rubato 5 docs; Tauri 2 global-shortcut plugin docs; NAudio author's
   blog on MixingSampleProvider and WASAPI resampling.
+- yt-dlp audio extraction and `--download-sections` docs (ffmpeg required for both).
+- Tauri 2 sidecar docs (`bundle.externalBin`, shell plugin permissions).
+- rustypipe crate and CLI (pure-Rust YouTube client, needs botguard helper, last release 2025-04).
