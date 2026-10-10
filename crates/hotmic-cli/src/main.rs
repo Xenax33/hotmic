@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use hotmic_core::mixer::MixerParams;
 use hotmic_core::{devices, Clip, Engine, EngineConfig, Event};
 
@@ -215,11 +215,12 @@ fn cmd_run(opts: RunOpts) -> Result<()> {
     let started = Instant::now();
 
     if let Some(secs) = opts.headless_secs {
-        let mut tone_played = false;
+        // Two tones, so repeated playback through the monitor path gets exercised too.
+        let mut tone_times = vec![Duration::from_millis(500), Duration::from_millis(2500)];
         while started.elapsed().as_secs_f32() < secs {
-            if !tone_played && started.elapsed() > Duration::from_millis(500) {
+            if tone_times.first().is_some_and(|&t| started.elapsed() > t) {
+                tone_times.remove(0);
                 engine.play(tone.clone());
-                tone_played = true;
             }
             drain_events(&engine, &mut underruns, &mut overruns);
             if last_report.elapsed() > Duration::from_secs(1) {
@@ -232,7 +233,8 @@ fn cmd_run(opts: RunOpts) -> Result<()> {
         return Ok(());
     }
 
-    println!("\nkeys: 1-9 play clip, T tone, 0 stop all, M toggle monitor, [ ] mic gain, Q quit\n");
+    println!("\nkeys: 1-9 play clip, T tone, 0 stop all, M toggle monitor, [ ] mic gain, Q or Ctrl+C quit");
+    println!("status line every 5 s: cb = output callbacks, ring = mic frames buffered, under/over = dropped mic frames\n");
     crossterm::terminal::enable_raw_mode()?;
     let result = interactive_loop(&mut engine, &clips, &tone, &mut underruns, &mut overruns, &mut last_report);
     crossterm::terminal::disable_raw_mode()?;
@@ -252,6 +254,11 @@ fn interactive_loop(
             if let TermEvent::Key(k) = event::read()? {
                 if k.kind != KeyEventKind::Press {
                     continue;
+                }
+                if k.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                {
+                    break;
                 }
                 match k.code {
                     KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
@@ -286,11 +293,12 @@ fn interactive_loop(
             }
         }
         drain_events(engine, underruns, overruns);
-        if last_report.elapsed() > Duration::from_secs(2) {
+        if last_report.elapsed() > Duration::from_secs(5) {
             report(engine, *underruns, *overruns);
             *last_report = Instant::now();
         }
     }
+    println!("stopped\r");
     Ok(())
 }
 
