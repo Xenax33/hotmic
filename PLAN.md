@@ -124,13 +124,29 @@ downstream matters.
   arrives).
 - Live meters for mic and output so you can see it working.
 
-### Phase 3: polish and the features that make it worth sharing (ongoing)
+### Phase 3: from dev build to daily driver (agreed order, 2026-10-12)
 
-- Waveform view with trim handles, fade in/out per clip.
-- Import from the folders of the paid app you use today.
-- Profiles (one library for Discord, one for streaming).
-- Installer via `tauri-bundler` (MSI/NSIS), winget manifest, GitHub Releases with auto-update.
-- Then pick from the feature list in section 9, roughly in the order given there.
+Done so far in Phase 2: devices, grid, gains, meters, loudness normalisation, global hotkeys
+(combo mode), replace/layer playback, Media Foundation decoder fallback, YouTube import with
+yt-dlp + Deno, non-destructive trim.
+
+1. **UI redesign.** The current UI is a functional placeholder. Target: a modern, sleek desktop
+   app that feels native on Windows 11. See section 11 for the research and chosen direction.
+2. **Tray mode and startup.** Close to tray, tray menu (Stop all, Quit), start with Windows,
+   engine keeps running while the window is hidden.
+3. **Installer.** `cargo tauri build` NSIS setup exe, GitHub Releases, later winget and
+   auto-update.
+4. **First-run wizard.** Detect VB-Cable, warn when the cable became the default output, show
+   the Discord input-device step, loopback self-test.
+5. **Auto push-to-talk.** Hold the user's Discord PTT key for the duration of a clip (SendInput),
+   defeating voice-activity gating. Shares the keyboard layer with item 6.
+6. **Layer-key and hot-mode hotkeys.** Bare keys that only fire while a layer key is held or hot
+   mode is toggled; low-level keyboard hook.
+7. **Clip polish.** Waveform with drag handles for trim, fade in/out, thumbnails on imported
+   tiles, folders or tags, search by tag.
+8. **Built-in noise suppression.** RNNoise on the mic inside Hotmic so Discord's Krisp can be off
+   without a noisy voice; echo cancellation later.
+9. Then the rest of section 9 (instant replay, phone remote, sound packs, TTS, profiles).
 
 ### Phase 4 (optional, later): own virtual microphone
 
@@ -287,6 +303,32 @@ Tier 3, later or community-driven:
 - Localisation and full keyboard accessibility.
 
 Deliberately not doing: cloud accounts, telemetry, built-in sound store, AI voice changer.
+
+## 11. UI direction (research, 2026-10-12)
+
+Findings:
+
+- Competitors: Soundpad is a dated list-style WinForms UI; Voicemod is neon purple/teal gamer
+  tiles; Resanance is flat dark grey. None feels like a native Windows 11 app. That is the gap.
+- Windows 11 conventions worth adopting: Mica backdrop (window takes the desktop tint), Segoe UI
+  Variable, 4 and 8 px radii, hairline layers instead of boxes, restrained colour with one accent,
+  dark mode designed first. Tauri 2 gets Mica through the `window-vibrancy` crate with
+  `transparent: true` and `decorations: false`, which means a custom title bar (drag region,
+  min/max/close, Snap Layouts need a bit of extra work).
+- Icons: Lucide (ISC, inline SVG, no npm). Fonts: Segoe UI Variable from the OS for UI text;
+  Manrope (OFL) for display; JetBrains Mono for hotkeys and times.
+
+Proposed layout (mockup at https://claude.ai/artifact/JVxjLimRykhacTHfV4yA5N):
+
+- Custom title bar with the engine route in it.
+- Icon rail on the left: Board, Import, Hotkeys, Settings. Devices and tools leave the board.
+- Board: search with Ctrl+K command palette, filter chips (folders or tags), tile grid with
+  tint or thumbnail, hotkey badge, duration, progress bar and glow while playing.
+- Collapsible mixer rail on the right: meters, now playing, mic/clip/duck gains, monitor,
+  replace mode, normalise, Stop all.
+- Status bar: engine health, Discord input reminder, tray hint.
+- Three skins on the same components: Fluent (native), Studio (pro-audio), Quiet (minimal).
+  Decision pending the user's pick.
 
 ## 10. Sources consulted
 
