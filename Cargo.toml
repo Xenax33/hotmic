@@ -8,6 +8,14 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/Xenax33/hotmic"
 
+# Debug builds keep our crates debuggable but optimise dependencies, otherwise decoding and
+# resampling in symphonia/rubato are 10 to 20 times slower than release.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [workspace.dependencies]
 anyhow = "1"
 thiserror = "2"

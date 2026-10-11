@@ -19,6 +19,19 @@ use symphonia::core::meta::MetadataOptions;
 
 use crate::{CHANNELS, SAMPLE_RATE};
 
+/// Longest file we are willing to decode into RAM. A soundboard clip is seconds, not an album.
+pub const MAX_CLIP_SECS: f32 = 600.0;
+
+/// What a file looks like from its headers, without decoding it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClipInfo {
+    /// Known when the container reports a frame count (MP3 with Xing header, WAV, FLAC, MP4).
+    pub duration_secs: Option<f32>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<usize>,
+    pub codec: String,
+}
+
 /// A fully decoded clip. Cheap to clone, the samples are shared.
 #[derive(Debug, Clone)]
 pub struct Clip {
@@ -31,9 +44,54 @@ pub struct Clip {
 }
 
 impl Clip {
+    /// Read container and codec headers only. Milliseconds, no audio decoded.
+    pub fn probe(path: impl AsRef<Path>) -> Result<ClipInfo> {
+        let path = path.as_ref();
+        let file = File::open(path)?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::default();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+        let format = symphonia::default::get_probe()
+            .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+            .context("unrecognised container format")?;
+        let track = format
+            .default_track(TrackType::Audio)
+            .ok_or_else(|| anyhow!("no audio track"))?;
+        let params = match &track.codec_params {
+            Some(CodecParameters::Audio(p)) => Some(p),
+            _ => None,
+        };
+        let sample_rate = params.and_then(|p| p.sample_rate);
+        let channels = params.and_then(|p| p.channels.as_ref().map(|c| c.count()));
+        let duration_secs = match (track.num_frames, sample_rate) {
+            (Some(n), Some(sr)) if sr > 0 => Some(n as f32 / sr as f32),
+            _ => None,
+        };
+        Ok(ClipInfo {
+            duration_secs,
+            sample_rate,
+            channels,
+            codec: params.map(|p| format!("{:?}", p.codec)).unwrap_or_default(),
+        })
+    }
+
     /// Decode a file from disk. Format is sniffed from content, the extension is only a hint.
     pub fn load(path: impl AsRef<Path>) -> Result<Clip> {
         let path = path.as_ref();
+        if let Ok(info) = Clip::probe(path) {
+            if let Some(d) = info.duration_secs {
+                if d > MAX_CLIP_SECS {
+                    bail!(
+                        "{} is {:.0} minutes long, longer than the {:.0} minute clip limit",
+                        path.display(),
+                        d / 60.0,
+                        MAX_CLIP_SECS / 60.0
+                    );
+                }
+            }
+        }
         let (raw, rate, channels) =
             decode(path).with_context(|| format!("decoding {}", path.display()))?;
         if raw.is_empty() {

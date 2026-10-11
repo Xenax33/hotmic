@@ -1,17 +1,33 @@
 //! Tauri shell for Hotmic. Thin: all audio work is in `hotmic-core`, this file is state,
 //! persistence, and the commands the HTML frontend calls.
+//!
+//! Rules that keep the window responsive:
+//! - Anything that touches files (decode, probe) runs on a blocking thread, never in a sync
+//!   command on the UI thread.
+//! - Decoded audio lives in a cache with a byte budget; the library itself only stores paths.
 
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use hotmic_core::clip::{DEFAULT_PEAK_CEILING, DEFAULT_TARGET_RMS};
+use hotmic_core::clip::{DEFAULT_PEAK_CEILING, DEFAULT_TARGET_RMS, MAX_CLIP_SECS};
 use hotmic_core::mixer::MixerParams;
 use hotmic_core::{devices, Clip, DeviceInfo, Engine, EngineConfig};
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const AUDIO_EXTS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "aiff", "aif"];
+/// Decoded audio kept in RAM at most. 512 MB is about 50 minutes of clips.
+const CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
+/// Background pre-decoding stops once the cache is this full, leaving room for played clips.
+const PREWARM_FRACTION: f64 = 0.6;
+
+/// Mutex lock that survives a panic on another thread instead of poisoning the whole app.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 // ------------------------------------------------------------------------------------------------
 // Persistent config
@@ -107,6 +123,60 @@ impl Config {
 }
 
 // ------------------------------------------------------------------------------------------------
+// Decoded clip cache (LRU by bytes)
+// ------------------------------------------------------------------------------------------------
+
+#[derive(Default)]
+struct ClipCache {
+    map: HashMap<String, (Arc<Clip>, u64)>,
+    bytes: usize,
+    tick: u64,
+}
+
+impl ClipCache {
+    fn get(&mut self, id: &str) -> Option<Arc<Clip>> {
+        self.tick += 1;
+        let t = self.tick;
+        self.map.get_mut(id).map(|(c, last)| {
+            *last = t;
+            c.clone()
+        })
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.map.contains_key(id)
+    }
+
+    fn insert(&mut self, id: String, clip: Arc<Clip>) {
+        let size = clip.samples.len() * std::mem::size_of::<f32>();
+        self.remove(&id);
+        while self.bytes + size > CACHE_BUDGET_BYTES && !self.map.is_empty() {
+            let oldest = self
+                .map
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| k.clone())
+                .expect("non-empty");
+            self.remove(&oldest);
+        }
+        self.tick += 1;
+        self.map.insert(id, (clip, self.tick));
+        self.bytes += size;
+    }
+
+    fn remove(&mut self, id: &str) {
+        if let Some((c, _)) = self.map.remove(id) {
+            self.bytes -= c.samples.len() * std::mem::size_of::<f32>();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.bytes = 0;
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
 // App state
 // ------------------------------------------------------------------------------------------------
 
@@ -114,8 +184,9 @@ pub struct AppState {
     config_path: PathBuf,
     config: Mutex<Config>,
     engine: Mutex<Option<Engine>>,
-    cache: Mutex<HashMap<String, Arc<Clip>>>,
+    cache: Mutex<ClipCache>,
     last_error: Mutex<Option<String>>,
+    adding: AtomicBool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +210,13 @@ pub struct Levels {
     pub callbacks: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct Progress {
+    done: usize,
+    total: usize,
+    name: String,
+}
+
 fn clip_id(path: &str) -> String {
     // FNV-1a over the lowercase path: stable, short, no extra dependency.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -149,18 +227,56 @@ fn clip_id(path: &str) -> String {
     format!("{h:016x}")
 }
 
+/// Decode and normalise. A decoder panic on a hostile file becomes an error, not a crash.
 fn load_clip(entry: &ClipEntry, normalize: bool) -> Result<Arc<Clip>, String> {
-    let mut clip = Clip::load(&entry.path).map_err(|e| format!("{e:#}"))?;
-    if normalize {
-        clip.normalize(DEFAULT_TARGET_RMS, DEFAULT_PEAK_CEILING);
+    let path = entry.path.clone();
+    let result = catch_unwind(AssertUnwindSafe(move || {
+        let mut clip = Clip::load(&path).map_err(|e| format!("{e:#}"))?;
+        if normalize {
+            clip.normalize(DEFAULT_TARGET_RMS, DEFAULT_PEAK_CEILING);
+        }
+        Ok::<Arc<Clip>, String>(Arc::new(clip))
+    }));
+    match result {
+        Ok(r) => r,
+        Err(_) => Err("the decoder crashed on this file".to_string()),
     }
-    Ok(Arc::new(clip))
+}
+
+/// Duration from headers when possible, otherwise by decoding once.
+fn probe_duration(entry: &ClipEntry) -> Result<f32, String> {
+    let path = entry.path.clone();
+    let result = catch_unwind(AssertUnwindSafe(move || {
+        let info = Clip::probe(&path).map_err(|e| format!("{e:#}"))?;
+        match info.duration_secs {
+            Some(d) if d > MAX_CLIP_SECS => Err(format!(
+                "{:.0} minutes long, over the {:.0} minute limit",
+                d / 60.0,
+                MAX_CLIP_SECS / 60.0
+            )),
+            Some(d) => Ok(d),
+            None => Clip::load(&path)
+                .map(|c| c.duration_secs())
+                .map_err(|e| format!("{e:#}")),
+        }
+    }));
+    match result {
+        Ok(r) => r,
+        Err(_) => Err("the decoder crashed on this file".to_string()),
+    }
+}
+
+fn is_audio(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| AUDIO_EXTS.contains(&e.to_lowercase().as_str()))
+        .unwrap_or(false)
 }
 
 impl AppState {
     fn status(&self) -> EngineStatus {
-        let engine = self.engine.lock().unwrap();
-        let error = self.last_error.lock().unwrap().clone();
+        let engine = lock(&self.engine);
+        let error = lock(&self.last_error).clone();
         let vb = devices::find_vb_cable().is_some();
         match engine.as_ref() {
             Some(e) => EngineStatus {
@@ -187,8 +303,8 @@ impl AppState {
     }
 
     fn start_engine(&self) -> Result<EngineStatus, String> {
-        let cfg = self.config.lock().unwrap().clone();
-        let mut engine = self.engine.lock().unwrap();
+        let cfg = lock(&self.config).clone();
+        let mut engine = lock(&self.engine);
         *engine = None; // drop any previous streams first
         let ecfg = EngineConfig {
             mic: cfg.mic.clone(),
@@ -201,17 +317,62 @@ impl AppState {
             Ok(e) => {
                 e.set_monitor(cfg.monitor_enabled && cfg.monitor.is_some());
                 *engine = Some(e);
-                *self.last_error.lock().unwrap() = None;
+                *lock(&self.last_error) = None;
             }
             Err(err) => {
                 let msg = format!("{err:#}");
-                *self.last_error.lock().unwrap() = Some(msg.clone());
+                *lock(&self.last_error) = Some(msg.clone());
                 drop(engine);
                 return Err(msg);
             }
         }
         drop(engine);
         Ok(self.status())
+    }
+
+    /// Get a decoded clip, decoding on a miss. Call from a blocking thread.
+    fn clip(&self, id: &str) -> Result<(Arc<Clip>, ClipEntry), String> {
+        let (entry, normalize) = {
+            let cfg = lock(&self.config);
+            let e = cfg
+                .clips
+                .iter()
+                .find(|c| c.id == id)
+                .cloned()
+                .ok_or_else(|| "unknown clip".to_string())?;
+            (e, cfg.normalize)
+        };
+        if let Some(c) = lock(&self.cache).get(id) {
+            return Ok((c, entry));
+        }
+        let c = load_clip(&entry, normalize)?;
+        lock(&self.cache).insert(id.to_string(), c.clone());
+        Ok((c, entry))
+    }
+}
+
+/// Decode clips in the background until the cache is comfortably full, so first plays are instant.
+fn prewarm(app: &AppHandle, ids: Vec<String>) {
+    let state = app.state::<AppState>();
+    let budget = (CACHE_BUDGET_BYTES as f64 * PREWARM_FRACTION) as usize;
+    for id in ids {
+        if lock(&state.cache).bytes >= budget {
+            break;
+        }
+        if lock(&state.cache).contains(&id) {
+            continue;
+        }
+        let (entry, normalize) = {
+            let cfg = lock(&state.config);
+            match cfg.clips.iter().find(|c| c.id == id) {
+                Some(e) => (e.clone(), cfg.normalize),
+                None => continue,
+            }
+        };
+        match load_clip(&entry, normalize) {
+            Ok(c) => lock(&state.cache).insert(id, c),
+            Err(e) => log::warn!("prewarm skipped {}: {e}", entry.name),
+        }
     }
 }
 
@@ -226,7 +387,7 @@ fn list_devices() -> Result<Vec<DeviceInfo>, String> {
 
 #[tauri::command]
 fn get_config(state: State<AppState>) -> Config {
-    state.config.lock().unwrap().clone()
+    lock(&state.config).clone()
 }
 
 /// Save settings. Gains apply live; device changes need `engine_start` again.
@@ -234,17 +395,17 @@ fn get_config(state: State<AppState>) -> Config {
 fn save_config(state: State<AppState>, config: Config) -> Result<Config, String> {
     config.save(&state.config_path)?;
     {
-        let mut engine = state.engine.lock().unwrap();
+        let mut engine = lock(&state.engine);
         if let Some(e) = engine.as_mut() {
             e.set_params(config.params());
             e.set_monitor(config.monitor_enabled && config.monitor.is_some());
         }
     }
-    let normalize_changed = state.config.lock().unwrap().normalize != config.normalize;
+    let normalize_changed = lock(&state.config).normalize != config.normalize;
     if normalize_changed {
-        state.cache.lock().unwrap().clear();
+        lock(&state.cache).clear();
     }
-    *state.config.lock().unwrap() = config.clone();
+    *lock(&state.config) = config.clone();
     Ok(config)
 }
 
@@ -255,7 +416,7 @@ fn engine_start(state: State<AppState>) -> Result<EngineStatus, String> {
 
 #[tauri::command]
 fn engine_stop(state: State<AppState>) -> EngineStatus {
-    *state.engine.lock().unwrap() = None;
+    *lock(&state.engine) = None;
     state.status()
 }
 
@@ -266,7 +427,7 @@ fn engine_status(state: State<AppState>) -> EngineStatus {
 
 #[tauri::command]
 fn levels(state: State<AppState>) -> Option<Levels> {
-    let engine = state.engine.lock().unwrap();
+    let engine = lock(&state.engine);
     engine.as_ref().map(|e| {
         let l = e.levels();
         Levels {
@@ -279,9 +440,33 @@ fn levels(state: State<AppState>) -> Option<Levels> {
     })
 }
 
-/// Add files or folders. Folders are scanned one level deep for audio files.
+/// Add files or folders (scanned one level deep). Runs off the UI thread and reports progress
+/// through the `library-progress` event.
 #[tauri::command]
-fn add_clips(state: State<AppState>, paths: Vec<String>) -> Result<Config, String> {
+async fn add_clips(app: AppHandle, paths: Vec<String>) -> Result<Config, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || add_clips_blocking(&handle, paths))
+        .await
+        .map_err(|e| format!("add task failed: {e}"))?
+}
+
+fn add_clips_blocking(app: &AppHandle, paths: Vec<String>) -> Result<Config, String> {
+    let state = app.state::<AppState>();
+    if state
+        .adding
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("already adding clips, wait for it to finish".to_string());
+    }
+    struct Done<'a>(&'a AtomicBool);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _done = Done(&state.adding);
+
     let mut files: Vec<PathBuf> = Vec::new();
     for p in paths {
         let path = PathBuf::from(&p);
@@ -300,17 +485,19 @@ fn add_clips(state: State<AppState>, paths: Vec<String>) -> Result<Config, Strin
         }
     }
 
-    let normalize = state.config.lock().unwrap().normalize;
-    let mut added = Vec::new();
-    let mut errors = Vec::new();
-    for f in files {
+    let total = files.len();
+    let mut added: Vec<ClipEntry> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for (i, f) in files.into_iter().enumerate() {
         let path_str = f.to_string_lossy().into_owned();
         let id = clip_id(&path_str);
-        if state.config.lock().unwrap().clips.iter().any(|c| c.id == id) {
+        let already = lock(&state.config).clips.iter().any(|c| c.id == id)
+            || added.iter().any(|c| c.id == id);
+        if already {
             continue;
         }
         let mut entry = ClipEntry {
-            id: id.clone(),
+            id,
             name: f
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
@@ -318,49 +505,65 @@ fn add_clips(state: State<AppState>, paths: Vec<String>) -> Result<Config, Strin
             path: path_str,
             ..Default::default()
         };
-        match load_clip(&entry, normalize) {
-            Ok(clip) => {
-                entry.duration_secs = clip.duration_secs();
-                state.cache.lock().unwrap().insert(id, clip);
+        let _ = app.emit(
+            "library-progress",
+            Progress {
+                done: i,
+                total,
+                name: entry.name.clone(),
+            },
+        );
+        match probe_duration(&entry) {
+            Ok(d) => {
+                entry.duration_secs = d;
                 added.push(entry);
             }
             Err(e) => errors.push(format!("{}: {e}", entry.name)),
         }
     }
+    let _ = app.emit(
+        "library-progress",
+        Progress {
+            done: total,
+            total,
+            name: String::new(),
+        },
+    );
 
-    let mut cfg = state.config.lock().unwrap();
-    cfg.clips.extend(added);
-    cfg.save(&state.config_path)?;
-    let out = cfg.clone();
-    drop(cfg);
+    let new_ids: Vec<String> = added.iter().map(|c| c.id.clone()).collect();
+    let out = {
+        let mut cfg = lock(&state.config);
+        cfg.clips.extend(added);
+        cfg.save(&state.config_path)?;
+        cfg.clone()
+    };
+
     if !errors.is_empty() {
-        log::warn!("some clips failed to load: {}", errors.join("; "));
-        if out.clips.is_empty() {
+        log::warn!("{} clips failed: {}", errors.len(), errors.join("; "));
+        if new_ids.is_empty() {
             return Err(errors.join("\n"));
         }
     }
-    Ok(out)
-}
 
-fn is_audio(p: &Path) -> bool {
-    p.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| AUDIO_EXTS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false)
+    // Decode the new clips in the background so the first click does not wait.
+    let handle = app.clone();
+    std::thread::spawn(move || prewarm(&handle, new_ids));
+
+    Ok(out)
 }
 
 #[tauri::command]
 fn remove_clip(state: State<AppState>, id: String) -> Result<Config, String> {
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = lock(&state.config);
     cfg.clips.retain(|c| c.id != id);
     cfg.save(&state.config_path)?;
-    state.cache.lock().unwrap().remove(&id);
+    lock(&state.cache).remove(&id);
     Ok(cfg.clone())
 }
 
 #[tauri::command]
 fn update_clip(state: State<AppState>, entry: ClipEntry) -> Result<Config, String> {
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = lock(&state.config);
     if let Some(c) = cfg.clips.iter_mut().find(|c| c.id == entry.id) {
         c.name = entry.name;
         c.gain = entry.gain.clamp(0.0, 4.0);
@@ -372,45 +575,31 @@ fn update_clip(state: State<AppState>, entry: ClipEntry) -> Result<Config, Strin
 }
 
 #[tauri::command]
-fn play(state: State<AppState>, id: String) -> Result<u64, String> {
-    let (entry, normalize) = {
-        let cfg = state.config.lock().unwrap();
-        let e = cfg
-            .clips
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()
-            .ok_or_else(|| "unknown clip".to_string())?;
-        (e, cfg.normalize)
-    };
-    let clip = {
-        let cached = state.cache.lock().unwrap().get(&id).cloned();
-        match cached {
-            Some(c) => c,
-            None => {
-                let c = load_clip(&entry, normalize)?;
-                state.cache.lock().unwrap().insert(id.clone(), c.clone());
-                c
-            }
-        }
-    };
-    let engine = state.engine.lock().unwrap();
-    let e = engine
-        .as_ref()
-        .ok_or_else(|| "engine is not running".to_string())?;
-    Ok(e.play_with(clip, entry.gain, false))
+async fn play(app: AppHandle, id: String) -> Result<u64, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppState>();
+        let (clip, entry) = state.clip(&id)?;
+        let engine = lock(&state.engine);
+        let e = engine
+            .as_ref()
+            .ok_or_else(|| "engine is not running".to_string())?;
+        Ok(e.play_with(clip, entry.gain, false))
+    })
+    .await
+    .map_err(|e| format!("play task failed: {e}"))?
 }
 
 #[tauri::command]
 fn stop_all(state: State<AppState>) {
-    if let Some(e) = state.engine.lock().unwrap().as_ref() {
+    if let Some(e) = lock(&state.engine).as_ref() {
         e.stop_all();
     }
 }
 
 #[tauri::command]
 fn play_test_tone(state: State<AppState>) -> Result<u64, String> {
-    let engine = state.engine.lock().unwrap();
+    let engine = lock(&state.engine);
     let e = engine
         .as_ref()
         .ok_or_else(|| "engine is not running".to_string())?;
@@ -440,8 +629,9 @@ pub fn run() {
                 config_path,
                 config: Mutex::new(config.clone()),
                 engine: Mutex::new(None),
-                cache: Mutex::new(HashMap::new()),
+                cache: Mutex::new(ClipCache::default()),
                 last_error: Mutex::new(None),
+                adding: AtomicBool::new(false),
             };
             if config.autostart_engine {
                 if let Err(e) = state.start_engine() {
@@ -449,6 +639,11 @@ pub fn run() {
                 }
             }
             app.manage(state);
+
+            // Warm the cache with the saved library, off the UI thread.
+            let ids: Vec<String> = config.clips.iter().map(|c| c.id.clone()).collect();
+            let handle = app.handle().clone();
+            std::thread::spawn(move || prewarm(&handle, ids));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

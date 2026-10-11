@@ -137,6 +137,21 @@ fn cmd_devices() -> Result<()> {
 fn cmd_probe(files: Vec<PathBuf>) -> Result<()> {
     for f in files {
         let t = Instant::now();
+        match Clip::probe(&f) {
+            Ok(info) => println!(
+                "{}: header says {} s, {:?} Hz x{:?}, codec {} (probe {} ms)",
+                f.display(),
+                info.duration_secs
+                    .map(|d| format!("{d:.2}"))
+                    .unwrap_or_else(|| "unknown".into()),
+                info.sample_rate,
+                info.channels,
+                info.codec,
+                t.elapsed().as_millis()
+            ),
+            Err(e) => println!("{}: probe failed: {e:#}", f.display()),
+        }
+        let t = Instant::now();
         match Clip::load(&f) {
             Ok(c) => println!(
                 "{}: {:.2}s, peak {:.2}, source {} Hz x{}, decoded in {} ms",

@@ -233,14 +233,38 @@ async function playClip(c) {
   }
 }
 
+let adding = false;
+
 async function addPaths(paths) {
   if (!paths || paths.length === 0) return;
+  if (adding) {
+    showBanner("Still adding the previous batch, one moment.", "");
+    return;
+  }
+  adding = true;
+  $("btn-add-files").disabled = true;
+  $("btn-add-folder").disabled = true;
+  showBanner("Adding clips...", "");
   try {
     config = await invoke("add_clips", { paths });
+    showBanner("");
     renderGrid();
   } catch (e) {
     showBanner("Could not add clips: " + e, "err");
+  } finally {
+    adding = false;
+    $("btn-add-files").disabled = false;
+    $("btn-add-folder").disabled = false;
   }
+}
+
+function bindProgress() {
+  tauri.event.listen("library-progress", (ev) => {
+    const p = ev.payload;
+    if (!p || !adding) return;
+    if (p.done >= p.total) showBanner(`Added ${p.total} clips, decoding in the background.`, "");
+    else showBanner(`Adding clips: ${p.done + 1} of ${p.total}  (${p.name})`, "");
+  });
 }
 
 function bindLibrary() {
@@ -362,6 +386,7 @@ async function main() {
   renderSettings();
   bindSettings();
   bindLibrary();
+  bindProgress();
   bindEditor();
   await loadDevices();
   renderGrid();
