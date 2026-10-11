@@ -141,8 +141,12 @@ impl Config {
 
     fn load(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            // Editors and PowerShell like to prepend a UTF-8 BOM; JSON parsers do not like it.
+            Ok(s) => serde_json::from_str(s.trim_start_matches('\u{feff}')).unwrap_or_else(|e| {
                 log::warn!("config unreadable ({e}), starting fresh");
+                let backup = path.with_extension("broken.json");
+                let _ = std::fs::copy(path, &backup);
+                log::warn!("kept a copy at {}", backup.display());
                 Config::default()
             }),
             Err(_) => Config::default(),
