@@ -88,7 +88,7 @@ impl Default for Config {
             monitor: None,
             monitor_enabled: true,
             mic_gain: 1.0,
-            clip_gain: 0.8,
+            clip_gain: 1.0,
             duck: 1.0,
             block_voice: false,
             normalize: true,

@@ -16,3 +16,11 @@ rubato.workspace = true
 rtrb.workspace = true
 crossbeam-channel.workspace = true
 serde.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Media Foundation fallback decoder: HE-AAC, WMA and anything else Windows can play.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }

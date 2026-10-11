@@ -92,8 +92,21 @@ impl Clip {
                 }
             }
         }
-        let (raw, rate, channels) =
-            decode(path).with_context(|| format!("decoding {}", path.display()))?;
+        let (raw, rate, channels) = match decode(path) {
+            Ok(d) => d,
+            #[cfg(windows)]
+            Err(e) => {
+                log::info!(
+                    "{}: symphonia could not decode it ({e:#}), trying Media Foundation",
+                    path.display()
+                );
+                crate::mf::decode(path).with_context(|| {
+                    format!("decoding {} (symphonia: {e:#}; Media Foundation also failed)", path.display())
+                })?
+            }
+            #[cfg(not(windows))]
+            Err(e) => return Err(e).with_context(|| format!("decoding {}", path.display())),
+        };
         if raw.is_empty() {
             bail!("{} contains no audio", path.display());
         }
@@ -168,8 +181,8 @@ impl Clip {
     }
 }
 
-/// Default normalisation target: -18 dBFS RMS over the non-silent parts.
-pub const DEFAULT_TARGET_RMS: f32 = 0.125;
+/// Default normalisation target: -16 dBFS RMS over the non-silent parts.
+pub const DEFAULT_TARGET_RMS: f32 = 0.158;
 /// Default peak ceiling after normalisation (-0.5 dBFS). The mixer's soft clipper sits above it.
 pub const DEFAULT_PEAK_CEILING: f32 = 0.94;
 
@@ -320,7 +333,7 @@ mod tests {
         // loud square-ish clip: peak 0.9, rms 0.9 -> would need gain < 1, ceiling not the limit
         let mut loud = Clip::from_samples("loud", vec![0.9; 9600]);
         let g2 = loud.normalize(DEFAULT_TARGET_RMS, DEFAULT_PEAK_CEILING);
-        assert!((g2 - 0.125 / 0.9).abs() < 1e-3, "gain {g2}");
+        assert!((g2 - DEFAULT_TARGET_RMS / 0.9).abs() < 1e-3, "gain {g2}");
 
         // silence stays silence, gain 1
         let mut quiet = Clip::from_samples("quiet", vec![0.0; 9600]);

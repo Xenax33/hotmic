@@ -13,6 +13,8 @@
 pub mod clip;
 pub mod devices;
 pub mod engine;
+#[cfg(windows)]
+pub mod mf;
 pub mod mixer;
 
 pub use clip::Clip;

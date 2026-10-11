@@ -157,6 +157,12 @@ Only worth it if you want zero third-party installs. Signing paths:
   the ring buffer slowly fills or drains. Handle with rubato async ratio nudging, or accept a
   rare dropped/duplicated frame. Do not ignore it.
 - **No blocking in audio callbacks.** No file I/O, no allocation, no mutex. Decode before play.
+- **"MP3" files that are really HE-AAC.** Clips ripped from videos often carry an .mp3 extension
+  over an MP4/AAC container, and symphonia only decodes AAC-LC. The engine falls back to Windows
+  Media Foundation (`hotmic-core/src/mf.rs`), which decodes HE-AAC, WMA and anything else the OS
+  can play. Found 2026-10-11 in the user's own library.
+- **Never decode on the UI thread.** The first folder import froze the app for minutes. File work
+  runs in blocking tasks, listing uses header probes only, decoded audio sits in a bounded cache.
 - **VB-Cable is "two apps only".** That is exactly our topology (us to Discord), so fine. If you
   later want more routing, that is what VoiceMeeter is for, or Phase 4.
 - **WhatsApp desktop** uses the Windows default communications mic. Either set "CABLE Output" as
