@@ -76,7 +76,76 @@ async function loadDevices() {
   $("chk-monitor").checked = !!config.monitor_enabled;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Hotkeys
+// ---------------------------------------------------------------------------------------------
+const MOD_CODES = new Set(["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"]);
+
+// Turn a keydown into the string the Rust side parses, e.g. "Ctrl+Alt+Digit1".
+function hotkeyFromEvent(e) {
+  if (MOD_CODES.has(e.code)) return null;
+  const parts = [];
+  if (e.ctrlKey) parts.push("Ctrl");
+  if (e.shiftKey) parts.push("Shift");
+  if (e.altKey) parts.push("Alt");
+  if (e.metaKey) parts.push("Super");
+  parts.push(e.code);
+  return parts.join("+");
+}
+
+function prettyHotkey(h) {
+  if (!h) return "";
+  return h
+    .replace(/Digit(\d)/, "$1")
+    .replace(/Key([A-Z])/, "$1")
+    .replace(/Numpad/, "Num ")
+    .replace(/Arrow/, "");
+}
+
+// Makes a readonly input capture a hotkey. onChange(stringOrNull) is called on every change.
+function bindKeyCapture(input, clearBtn, onChange) {
+  input.addEventListener("keydown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      input.blur();
+      return;
+    }
+    const h = hotkeyFromEvent(e);
+    if (!h) return;
+    input.dataset.value = h;
+    input.value = prettyHotkey(h);
+    input.blur();
+    onChange(h);
+  });
+  input.addEventListener("focus", () => {
+    input.placeholder = "press keys now (Esc to cancel)";
+  });
+  input.addEventListener("blur", () => {
+    input.placeholder = "click, then press keys";
+  });
+  clearBtn.addEventListener("click", () => {
+    input.dataset.value = "";
+    input.value = "";
+    onChange(null);
+  });
+}
+
+function setKeyInput(input, value) {
+  input.dataset.value = value || "";
+  input.value = prettyHotkey(value || "");
+}
+
+async function applyHotkeys() {
+  const errors = await invoke("apply_hotkeys");
+  if (errors.length) showBanner("Hotkey problems: " + errors.join(" | "), "err");
+  else if ($("banner").textContent.startsWith("Hotkey problems")) showBanner("");
+}
+
 function renderSettings() {
+  $("mode-replace").checked = config.playback_mode !== "layer";
+  $("mode-layer").checked = config.playback_mode === "layer";
+  setKeyInput($("key-stopall"), config.stop_all_hotkey);
   $("rng-mic-gain").value = config.mic_gain;
   $("rng-clip-gain").value = config.clip_gain;
   $("rng-duck").value = config.duck;
@@ -101,6 +170,19 @@ function bindSettings() {
   $("chk-normalize").addEventListener("change", async (e) => {
     config.normalize = e.target.checked;
     await saveConfig();
+  });
+  for (const id of ["mode-replace", "mode-layer"]) {
+    $(id).addEventListener("change", async (e) => {
+      if (e.target.checked) {
+        config.playback_mode = e.target.value;
+        await saveConfig();
+      }
+    });
+  }
+  bindKeyCapture($("key-stopall"), $("key-stopall-clear"), async (h) => {
+    config.stop_all_hotkey = h;
+    await saveConfig();
+    await applyHotkeys();
   });
   $("chk-monitor").addEventListener("change", async (e) => {
     config.monitor_enabled = e.target.checked;
@@ -208,7 +290,7 @@ function renderGrid() {
     t.querySelector(".title").textContent = c.name;
     t.querySelector(".dur").textContent = fmtDur(c.duration_secs);
     const key = t.querySelector(".key");
-    if (c.hotkey) key.textContent = c.hotkey;
+    if (c.hotkey) key.textContent = prettyHotkey(c.hotkey);
     else key.remove();
     t.addEventListener("click", (e) => {
       if (e.target.closest(".edit")) return;
@@ -222,12 +304,30 @@ function renderGrid() {
   }
 }
 
+function clearPlayingTiles() {
+  for (const id of playing.keys()) {
+    const el = document.querySelector(`.tile[data-id="${id}"]`);
+    if (el) {
+      el.classList.remove("playing");
+      el.querySelector(".progress").style.width = "0";
+    }
+  }
+  playing.clear();
+}
+
+// Marks a tile as playing. Called for clicks and for hotkeys (via the clip-started event).
+function markStarted(id, exclusive) {
+  const c = config.clips.find((x) => x.id === id);
+  if (!c) return;
+  if (exclusive) clearPlayingTiles();
+  playing.set(c.id, { start: performance.now(), dur: c.duration_secs * 1000 });
+  const el = document.querySelector(`.tile[data-id="${c.id}"]`);
+  if (el) el.classList.add("playing");
+}
+
 async function playClip(c) {
   try {
     await invoke("play", { id: c.id });
-    playing.set(c.id, { start: performance.now(), dur: c.duration_secs * 1000 });
-    const el = document.querySelector(`.tile[data-id="${c.id}"]`);
-    if (el) el.classList.add("playing");
   } catch (e) {
     showBanner(String(e), "err");
   }
@@ -284,15 +384,13 @@ function bindLibrary() {
   $("search").addEventListener("input", renderGrid);
   $("btn-stop").addEventListener("click", async () => {
     await invoke("stop_all");
-    for (const id of playing.keys()) {
-      const el = document.querySelector(`.tile[data-id="${id}"]`);
-      if (el) {
-        el.classList.remove("playing");
-        el.querySelector(".progress").style.width = "0";
-      }
-    }
-    playing.clear();
+    clearPlayingTiles();
   });
+  tauri.event.listen("clip-started", (ev) => {
+    const p = ev.payload || {};
+    markStarted(p.id, !!p.exclusive);
+  });
+  tauri.event.listen("clips-stopped", () => clearPlayingTiles());
   $("btn-tone").addEventListener("click", async () => {
     try {
       await invoke("play_test_tone");
@@ -338,6 +436,7 @@ function openEditor(c) {
   $("edit-name").value = c.name;
   $("edit-gain").value = c.gain;
   $("edit-gain-val").textContent = c.gain.toFixed(2);
+  setKeyInput($("edit-hotkey"), c.hotkey);
   $("edit-path").textContent = c.path;
   const sw = $("edit-colors");
   sw.innerHTML = "";
@@ -361,17 +460,22 @@ function bindEditor() {
     editing.gain = parseFloat(e.target.value);
     $("edit-gain-val").textContent = editing.gain.toFixed(2);
   });
+  bindKeyCapture($("edit-hotkey"), $("edit-hotkey-clear"), (h) => {
+    editing.hotkey = h;
+  });
   $("edit-cancel").addEventListener("click", () => $("modal").classList.add("hidden"));
   $("edit-save").addEventListener("click", async () => {
     editing.name = $("edit-name").value.trim() || editing.name;
     config = await invoke("update_clip", { entry: editing });
     $("modal").classList.add("hidden");
     renderGrid();
+    await applyHotkeys();
   });
   $("edit-remove").addEventListener("click", async () => {
     config = await invoke("remove_clip", { id: editing.id });
     $("modal").classList.add("hidden");
     renderGrid();
+    await applyHotkeys();
   });
   $("modal").addEventListener("click", (e) => {
     if (e.target === $("modal")) $("modal").classList.add("hidden");
@@ -394,6 +498,7 @@ async function main() {
   if (!status.running && config.autostart_engine && status.vb_cable_installed && !status.error) {
     await startEngine();
   }
+  await applyHotkeys();
   setInterval(pollLevels, 100);
   setInterval(refreshStatus, 3000);
 }

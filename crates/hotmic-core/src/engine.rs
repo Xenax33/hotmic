@@ -60,6 +60,8 @@ pub enum Command {
         clip: Arc<Clip>,
         gain: f32,
         looping: bool,
+        /// Fade out every other voice first, so only this clip is heard.
+        exclusive: bool,
     },
     Stop(VoiceId),
     StopAll,
@@ -246,7 +248,13 @@ impl Engine {
                                     clip,
                                     gain,
                                     looping,
-                                } => mixer.play(Voice::new(id, clip, gain, looping)),
+                                    exclusive,
+                                } => {
+                                    if exclusive {
+                                        mixer.stop_all();
+                                    }
+                                    mixer.play(Voice::new(id, clip, gain, looping))
+                                }
                                 Command::Stop(id) => mixer.stop(id),
                                 Command::StopAll => mixer.stop_all(),
                                 Command::SetParams(p) => mixer.params = p,
@@ -358,17 +366,20 @@ impl Engine {
         })
     }
 
+    /// Layer a clip on top of whatever is playing.
     pub fn play(&self, clip: Arc<Clip>) -> VoiceId {
-        self.play_with(clip, 1.0, false)
+        self.play_with(clip, 1.0, false, false)
     }
 
-    pub fn play_with(&self, clip: Arc<Clip>, gain: f32, looping: bool) -> VoiceId {
+    /// `exclusive` fades out every other voice (10 ms) before this one starts.
+    pub fn play_with(&self, clip: Arc<Clip>, gain: f32, looping: bool, exclusive: bool) -> VoiceId {
         let id = self.next_voice.fetch_add(1, Ordering::Relaxed);
         self.send(Command::Play {
             id,
             clip,
             gain,
             looping,
+            exclusive,
         });
         id
     }

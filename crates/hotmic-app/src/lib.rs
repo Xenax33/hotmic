@@ -17,6 +17,7 @@ use hotmic_core::mixer::MixerParams;
 use hotmic_core::{devices, Clip, DeviceInfo, Engine, EngineConfig};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const AUDIO_EXTS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "aiff", "aif"];
 /// Decoded audio kept in RAM at most. 512 MB is about 50 minutes of clips.
@@ -72,6 +73,10 @@ pub struct Config {
     pub block_voice: bool,
     pub normalize: bool,
     pub autostart_engine: bool,
+    /// "replace": a new clip fades out whatever is playing. "layer": clips stack.
+    pub playback_mode: String,
+    /// Global hotkey that stops every playing clip, e.g. "Ctrl+Alt+Digit0".
+    pub stop_all_hotkey: Option<String>,
     pub clips: Vec<ClipEntry>,
 }
 
@@ -88,6 +93,8 @@ impl Default for Config {
             block_voice: false,
             normalize: true,
             autostart_engine: true,
+            playback_mode: "replace".to_string(),
+            stop_all_hotkey: None,
             clips: Vec::new(),
         }
     }
@@ -180,6 +187,12 @@ impl ClipCache {
 // App state
 // ------------------------------------------------------------------------------------------------
 
+#[derive(Debug, Clone)]
+enum HotkeyAction {
+    Play(String),
+    StopAll,
+}
+
 pub struct AppState {
     config_path: PathBuf,
     config: Mutex<Config>,
@@ -187,6 +200,8 @@ pub struct AppState {
     cache: Mutex<ClipCache>,
     last_error: Mutex<Option<String>>,
     adding: AtomicBool,
+    /// Registered global shortcuts, keyed by the shortcut's canonical string.
+    hotkeys: Mutex<HashMap<String, HotkeyAction>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -351,6 +366,79 @@ impl AppState {
     }
 }
 
+/// Play a clip by id from any thread. Decodes on a cache miss.
+fn play_by_id(app: &AppHandle, id: &str) -> Result<u64, String> {
+    let state = app.state::<AppState>();
+    let exclusive = lock(&state.config).playback_mode != "layer";
+    let (clip, entry) = state.clip(id)?;
+    let engine = lock(&state.engine);
+    let e = engine
+        .as_ref()
+        .ok_or_else(|| "engine is not running".to_string())?;
+    let voice = e.play_with(clip, entry.gain, false, exclusive);
+    let _ = app.emit("clip-started", serde_json::json!({ "id": id, "voice": voice, "exclusive": exclusive }));
+    Ok(voice)
+}
+
+/// Re-register every global hotkey from the config. Returns one message per key that failed
+/// (bad syntax or already taken by another app or clip).
+fn sync_hotkeys(app: &AppHandle) -> Vec<String> {
+    let state = app.state::<AppState>();
+    let gs = app.global_shortcut();
+    let mut errors = Vec::new();
+    let mut map: HashMap<String, HotkeyAction> = HashMap::new();
+    if let Err(e) = gs.unregister_all() {
+        log::warn!("unregister_all: {e}");
+    }
+
+    let cfg = lock(&state.config).clone();
+    let mut wanted: Vec<(String, String, HotkeyAction)> = cfg
+        .clips
+        .iter()
+        .filter_map(|c| {
+            c.hotkey
+                .as_ref()
+                .filter(|h| !h.trim().is_empty())
+                .map(|h| (h.clone(), c.name.clone(), HotkeyAction::Play(c.id.clone())))
+        })
+        .collect();
+    if let Some(h) = cfg.stop_all_hotkey.as_ref().filter(|h| !h.trim().is_empty()) {
+        wanted.push((h.clone(), "Stop all".to_string(), HotkeyAction::StopAll));
+    }
+
+    for (text, label, action) in wanted {
+        let shortcut: Shortcut = match text.parse() {
+            Ok(s) => s,
+            Err(e) => {
+                errors.push(format!("{label}: '{text}' is not a valid hotkey ({e})"));
+                continue;
+            }
+        };
+        let key = shortcut.into_string();
+        if let Some(prev) = map.get(&key) {
+            let other = match prev {
+                HotkeyAction::Play(id) => cfg
+                    .clips
+                    .iter()
+                    .find(|c| &c.id == id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default(),
+                HotkeyAction::StopAll => "Stop all".to_string(),
+            };
+            errors.push(format!("{label}: '{text}' is already used by {other}"));
+            continue;
+        }
+        match gs.register(shortcut) {
+            Ok(()) => {
+                map.insert(key, action);
+            }
+            Err(e) => errors.push(format!("{label}: could not register '{text}' ({e})")),
+        }
+    }
+    *lock(&state.hotkeys) = map;
+    errors
+}
+
 /// Decode clips in the background until the cache is comfortably full, so first plays are instant.
 fn prewarm(app: &AppHandle, ids: Vec<String>) {
     let state = app.state::<AppState>();
@@ -407,6 +495,12 @@ fn save_config(state: State<AppState>, config: Config) -> Result<Config, String>
     }
     *lock(&state.config) = config.clone();
     Ok(config)
+}
+
+/// Re-register global hotkeys after the library or settings changed. Returns problems, if any.
+#[tauri::command]
+fn apply_hotkeys(app: AppHandle) -> Vec<String> {
+    sync_hotkeys(&app)
 }
 
 #[tauri::command]
@@ -577,17 +671,9 @@ fn update_clip(state: State<AppState>, entry: ClipEntry) -> Result<Config, Strin
 #[tauri::command]
 async fn play(app: AppHandle, id: String) -> Result<u64, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = handle.state::<AppState>();
-        let (clip, entry) = state.clip(&id)?;
-        let engine = lock(&state.engine);
-        let e = engine
-            .as_ref()
-            .ok_or_else(|| "engine is not running".to_string())?;
-        Ok(e.play_with(clip, entry.gain, false))
-    })
-    .await
-    .map_err(|e| format!("play task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || play_by_id(&handle, &id))
+        .await
+        .map_err(|e| format!("play task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -617,6 +703,34 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let state = app.state::<AppState>();
+                    let action = lock(&state.hotkeys).get(&shortcut.into_string()).cloned();
+                    match action {
+                        Some(HotkeyAction::Play(id)) => {
+                            let handle = app.clone();
+                            std::thread::spawn(move || {
+                                if let Err(e) = play_by_id(&handle, &id) {
+                                    log::warn!("hotkey play failed: {e}");
+                                }
+                            });
+                        }
+                        Some(HotkeyAction::StopAll) => {
+                            if let Some(e) = lock(&state.engine).as_ref() {
+                                e.stop_all();
+                            }
+                            let _ = app.emit("clips-stopped", ());
+                        }
+                        None => {}
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let config_path = app
                 .path()
@@ -632,6 +746,7 @@ pub fn run() {
                 cache: Mutex::new(ClipCache::default()),
                 last_error: Mutex::new(None),
                 adding: AtomicBool::new(false),
+                hotkeys: Mutex::new(HashMap::new()),
             };
             if config.autostart_engine {
                 if let Err(e) = state.start_engine() {
@@ -639,6 +754,9 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            for e in sync_hotkeys(app.handle()) {
+                log::warn!("hotkey: {e}");
+            }
 
             // Warm the cache with the saved library, off the UI thread.
             let ids: Vec<String> = config.clips.iter().map(|c| c.id.clone()).collect();
@@ -657,6 +775,7 @@ pub fn run() {
             add_clips,
             remove_clip,
             update_clip,
+            apply_hotkeys,
             play,
             stop_all,
             play_test_tone,

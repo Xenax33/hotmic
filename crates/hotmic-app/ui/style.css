@@ -98,6 +98,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 .tile .progress { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: var(--accent); }
 .tile.playing { border-color: var(--accent); }
 
+/* hotkey capture */
+.keyrow { display: flex; gap: 6px; margin-top: 4px; }
+.keyrow input { margin: 0; flex: 1; font-family: Consolas, monospace; }
+.keyrow input:focus { border-color: var(--accent); background: #2a1f1f; }
+button.small { padding: 4px 9px; }
+
 /* modal */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; }
 .modal-card { width: 380px; padding: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
