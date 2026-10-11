@@ -111,7 +111,9 @@ impl Default for Config {
         Config {
             mic: String::new(),
             cable: devices::VB_CABLE_RENDER.to_string(),
-            monitor: None,
+            // Empty string = "the system default output", resolved at engine start so a fresh
+            // install hears its clips. None = monitoring off.
+            monitor: Some(String::new()),
             monitor_enabled: true,
             mic_gain: 1.0,
             clip_gain: 1.0,
@@ -314,6 +316,28 @@ fn probe_duration(entry: &ClipEntry) -> Result<f32, String> {
     }
 }
 
+/// Turn the monitor setting into a concrete device spec. An empty spec means "default output",
+/// unless the default output *is* the cable (VB-Cable's installer makes it the default), in
+/// which case the first real output device is used so the user is not fed their own clips twice.
+fn resolve_monitor(spec: &str, cable_spec: &str) -> String {
+    if !spec.trim().is_empty() {
+        return spec.to_string();
+    }
+    let Ok(list) = devices::list() else {
+        return String::new();
+    };
+    let is_cable = |d: &DeviceInfo| {
+        d.name.contains("CABLE") || d.id == cable_spec || d.name.contains(cable_spec)
+    };
+    if let Some(d) = list.iter().find(|d| d.is_output && d.is_default_output && !is_cable(d)) {
+        return d.id.clone();
+    }
+    list.iter()
+        .find(|d| d.is_output && !is_cable(d))
+        .map(|d| d.id.clone())
+        .unwrap_or_default()
+}
+
 fn is_audio(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
@@ -357,7 +381,7 @@ impl AppState {
         let ecfg = EngineConfig {
             mic: cfg.mic.clone(),
             cable: cfg.cable.clone(),
-            monitor: cfg.monitor.clone(),
+            monitor: cfg.monitor.clone().map(|m| resolve_monitor(&m, &cfg.cable)),
             params: cfg.params(),
             ..Default::default()
         };

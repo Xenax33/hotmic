@@ -40,13 +40,23 @@ async function saveConfig() {
 // ---------------------------------------------------------------------------------------------
 // Devices and settings
 // ---------------------------------------------------------------------------------------------
+const MONITOR_OFF = "__none__";
+
 function fillSelect(sel, list, current, allowNone) {
   sel.innerHTML = "";
   if (allowNone) {
+    // monitor select: "" = system default output, MONITOR_OFF = no monitor at all
+    const d = document.createElement("option");
+    d.value = "";
+    d.textContent = "(default output)";
+    sel.appendChild(d);
     const o = document.createElement("option");
-    o.value = "";
+    o.value = MONITOR_OFF;
     o.textContent = "(none)";
     sel.appendChild(o);
+    if (current === null || current === undefined) {
+      current = MONITOR_OFF;
+    }
   }
   for (const d of list) {
     const o = document.createElement("option");
@@ -63,6 +73,10 @@ function fillSelect(sel, list, current, allowNone) {
   if (!match && !current && !allowNone) {
     match = list.find((d) => d.is_default_input || d.is_default_output) || list[0];
   }
+  if (!match && allowNone) {
+    sel.value = current === MONITOR_OFF ? MONITOR_OFF : "";
+    return;
+  }
   sel.value = match ? match.id : "";
 }
 
@@ -72,7 +86,7 @@ async function loadDevices() {
   const outs = devices.filter((d) => d.is_output);
   fillSelect($("sel-mic"), ins, config.mic, false);
   fillSelect($("sel-cable"), outs, config.cable, false);
-  fillSelect($("sel-monitor"), outs, config.monitor || "", true);
+  fillSelect($("sel-monitor"), outs, config.monitor, true);
   $("chk-monitor").checked = !!config.monitor_enabled;
 }
 
@@ -192,7 +206,7 @@ function bindSettings() {
   $("btn-apply-devices").addEventListener("click", async () => {
     config.mic = $("sel-mic").value;
     config.cable = $("sel-cable").value;
-    config.monitor = $("sel-monitor").value || null;
+    config.monitor = $("sel-monitor").value === MONITOR_OFF ? null : $("sel-monitor").value;
     config.monitor_enabled = $("chk-monitor").checked;
     await saveConfig();
     await startEngine();
