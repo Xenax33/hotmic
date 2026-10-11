@@ -16,6 +16,7 @@ pub mod engine;
 #[cfg(windows)]
 pub mod mf;
 pub mod mixer;
+pub mod ytdlp;
 
 pub use clip::Clip;
 pub use devices::{DeviceInfo, DeviceKind};

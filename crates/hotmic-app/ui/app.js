@@ -429,6 +429,135 @@ function bindLibrary() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Time helpers and URL import
+// ---------------------------------------------------------------------------------------------
+// "1:23", "83", "1:02:03" -> seconds; empty -> null
+function parseTime(s) {
+  s = (s || "").trim();
+  if (!s) return null;
+  const parts = s.split(":").map((p) => parseFloat(p));
+  if (parts.some((p) => Number.isNaN(p))) return null;
+  return parts.reduce((acc, p) => acc * 60 + p, 0);
+}
+
+function fmtTime(s) {
+  if (s == null) return "";
+  const m = Math.floor(s / 60);
+  const r = s - m * 60;
+  return `${m}:${r < 10 ? "0" : ""}${r.toFixed(r % 1 ? 1 : 0)}`;
+}
+
+let ytInfo = null;
+
+async function refreshTools() {
+  const t = await invoke("tools_status");
+  const el = $("yt-tools");
+  if (t.ready) {
+    el.innerHTML = "";
+    el.textContent = `yt-dlp ${t.ytdlp_version || ""} and ${t.deno_version || "deno"} ready. `;
+    const upd = document.createElement("a");
+    upd.href = "#";
+    upd.textContent = "Check for update";
+    upd.addEventListener("click", async (e) => {
+      e.preventDefault();
+      showBanner("Updating yt-dlp...", "");
+      try {
+        const out = await invoke("tools_update");
+        showBanner(out.split("\n").pop(), "");
+        refreshTools();
+      } catch (err) {
+        showBanner("Update failed: " + err, "err");
+      }
+    });
+    el.appendChild(upd);
+    $("yt-install").classList.add("hidden");
+    $("yt-form").classList.remove("hidden");
+  } else {
+    const missing = [!t.ytdlp_path && "yt-dlp (downloader)", !t.deno_path && "Deno (JavaScript runtime YouTube requires)"].filter(Boolean);
+    el.textContent = `Needs ${missing.join(" and ")}. Fetched from their official GitHub releases and checked against the published SHA-256.`;
+    $("yt-install").classList.remove("hidden");
+    $("yt-form").classList.add("hidden");
+  }
+}
+
+function bindYt() {
+  $("yt-cookies").value = config.yt_cookies_browser || "";
+  $("yt-cookies").addEventListener("change", async (e) => {
+    config.yt_cookies_browser = e.target.value || null;
+    await saveConfig();
+  });
+  $("yt-install").addEventListener("click", async () => {
+    $("yt-install").disabled = true;
+    showBanner("Downloading yt-dlp and Deno, this takes a minute...", "");
+    try {
+      await invoke("tools_install");
+      showBanner("");
+      await refreshTools();
+    } catch (e) {
+      showBanner("Could not install yt-dlp: " + e, "err");
+    } finally {
+      $("yt-install").disabled = false;
+    }
+  });
+
+  $("yt-fetch").addEventListener("click", async () => {
+    const url = $("yt-url").value.trim();
+    if (!url) return;
+    $("yt-fetch").disabled = true;
+    $("yt-fetch").textContent = "Fetching...";
+    try {
+      ytInfo = await invoke("yt_probe", { url });
+      $("yt-title").textContent = ytInfo.title;
+      $("yt-meta").textContent = [ytInfo.uploader, ytInfo.duration_secs != null ? fmtTime(ytInfo.duration_secs) : null].filter(Boolean).join("  |  ");
+      $("yt-name").value = ytInfo.title;
+      $("yt-start").value = "";
+      $("yt-end").value = "";
+      $("yt-info").classList.remove("hidden");
+      showBanner("");
+    } catch (e) {
+      ytInfo = null;
+      $("yt-info").classList.add("hidden");
+      showBanner("Could not read that URL: " + e, "err");
+    } finally {
+      $("yt-fetch").disabled = false;
+      $("yt-fetch").textContent = "Fetch info";
+    }
+  });
+  $("yt-url").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("yt-fetch").click();
+  });
+
+  $("yt-import").addEventListener("click", async () => {
+    const url = $("yt-url").value.trim();
+    if (!url) return;
+    const start = parseTime($("yt-start").value);
+    const end = parseTime($("yt-end").value);
+    if ($("yt-start").value.trim() && start == null) return showBanner("Start time is not valid", "err");
+    if ($("yt-end").value.trim() && end == null) return showBanner("End time is not valid", "err");
+    $("yt-import").disabled = true;
+    showBanner("Starting download...", "");
+    try {
+      config = await invoke("yt_import", { url, name: $("yt-name").value, start, end });
+      renderGrid();
+      showBanner(`Imported "${$("yt-name").value || (ytInfo && ytInfo.title) || "clip"}".`, "");
+      $("yt-url").value = "";
+      $("yt-info").classList.add("hidden");
+      ytInfo = null;
+    } catch (e) {
+      showBanner("Import failed: " + e, "err");
+    } finally {
+      $("yt-import").disabled = false;
+    }
+  });
+
+  tauri.event.listen("yt-progress", (ev) => {
+    const p = ev.payload || {};
+    if (p.percent >= 100) showBanner(p.text, "");
+    else showBanner(`${p.text}  ${p.percent ? p.percent.toFixed(0) + "%" : ""}`, "");
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // Clip editor
 // ---------------------------------------------------------------------------------------------
 function openEditor(c) {
@@ -437,7 +566,10 @@ function openEditor(c) {
   $("edit-gain").value = c.gain;
   $("edit-gain-val").textContent = c.gain.toFixed(2);
   setKeyInput($("edit-hotkey"), c.hotkey);
-  $("edit-path").textContent = c.path;
+  $("edit-start").value = c.trim_start ? fmtTime(c.trim_start) : "";
+  $("edit-end").value = c.trim_end != null ? fmtTime(c.trim_end) : "";
+  $("edit-full").textContent = c.full_duration_secs ? `Full file: ${fmtTime(c.full_duration_secs)}` : "";
+  $("edit-path").textContent = c.source_url ? `${c.path}\n${c.source_url}` : c.path;
   const sw = $("edit-colors");
   sw.innerHTML = "";
   for (const col of COLORS) {
@@ -466,6 +598,12 @@ function bindEditor() {
   $("edit-cancel").addEventListener("click", () => $("modal").classList.add("hidden"));
   $("edit-save").addEventListener("click", async () => {
     editing.name = $("edit-name").value.trim() || editing.name;
+    const s = parseTime($("edit-start").value);
+    const e = parseTime($("edit-end").value);
+    if ($("edit-start").value.trim() && s == null) return showBanner("Start time is not valid", "err");
+    if ($("edit-end").value.trim() && e == null) return showBanner("End time is not valid", "err");
+    editing.trim_start = s || 0;
+    editing.trim_end = e;
     config = await invoke("update_clip", { entry: editing });
     $("modal").classList.add("hidden");
     renderGrid();
@@ -492,6 +630,8 @@ async function main() {
   bindLibrary();
   bindProgress();
   bindEditor();
+  bindYt();
+  refreshTools().catch(() => {});
   await loadDevices();
   renderGrid();
   await refreshStatus();

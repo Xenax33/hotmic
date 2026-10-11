@@ -41,9 +41,18 @@ pub struct ClipEntry {
     pub name: String,
     pub path: String,
     pub gain: f32,
+    /// Duration after trimming, what the tile shows.
     pub duration_secs: f32,
+    /// Duration of the whole file.
+    pub full_duration_secs: f32,
+    /// Non-destructive trim in seconds of the source file.
+    pub trim_start: f32,
+    pub trim_end: Option<f32>,
     pub hotkey: Option<String>,
     pub color: Option<String>,
+    /// Where it came from, when imported from a URL.
+    pub source_url: Option<String>,
+    pub thumbnail: Option<String>,
 }
 
 impl Default for ClipEntry {
@@ -54,9 +63,24 @@ impl Default for ClipEntry {
             path: String::new(),
             gain: 1.0,
             duration_secs: 0.0,
+            full_duration_secs: 0.0,
+            trim_start: 0.0,
+            trim_end: None,
             hotkey: None,
             color: None,
+            source_url: None,
+            thumbnail: None,
         }
+    }
+}
+
+impl ClipEntry {
+    fn trimmed_duration(&self) -> f32 {
+        let end = self
+            .trim_end
+            .map(|e| e.min(self.full_duration_secs))
+            .unwrap_or(self.full_duration_secs);
+        (end - self.trim_start.max(0.0)).max(0.0)
     }
 }
 
@@ -77,6 +101,8 @@ pub struct Config {
     pub playback_mode: String,
     /// Global hotkey that stops every playing clip, e.g. "Ctrl+Alt+Digit0".
     pub stop_all_hotkey: Option<String>,
+    /// Browser whose YouTube login yt-dlp may use ("chrome", "edge", "firefox"), or None.
+    pub yt_cookies_browser: Option<String>,
     pub clips: Vec<ClipEntry>,
 }
 
@@ -95,6 +121,7 @@ impl Default for Config {
             autostart_engine: true,
             playback_mode: "replace".to_string(),
             stop_all_hotkey: None,
+            yt_cookies_browser: None,
             clips: Vec::new(),
         }
     }
@@ -202,6 +229,8 @@ pub struct AppState {
     adding: AtomicBool,
     /// Registered global shortcuts, keyed by the shortcut's canonical string.
     hotkeys: Mutex<HashMap<String, HotkeyAction>>,
+    /// Where URL imports are saved.
+    download_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -242,11 +271,15 @@ fn clip_id(path: &str) -> String {
     format!("{h:016x}")
 }
 
-/// Decode and normalise. A decoder panic on a hostile file becomes an error, not a crash.
+/// Decode, trim and normalise. A decoder panic on a hostile file becomes an error, not a crash.
 fn load_clip(entry: &ClipEntry, normalize: bool) -> Result<Arc<Clip>, String> {
     let path = entry.path.clone();
+    let (trim_start, trim_end) = (entry.trim_start, entry.trim_end);
     let result = catch_unwind(AssertUnwindSafe(move || {
         let mut clip = Clip::load(&path).map_err(|e| format!("{e:#}"))?;
+        if trim_start > 0.0 || trim_end.is_some() {
+            clip = clip.trimmed(trim_start, trim_end);
+        }
         if normalize {
             clip.normalize(DEFAULT_TARGET_RMS, DEFAULT_PEAK_CEILING);
         }
@@ -609,6 +642,7 @@ fn add_clips_blocking(app: &AppHandle, paths: Vec<String>) -> Result<Config, Str
         );
         match probe_duration(&entry) {
             Ok(d) => {
+                entry.full_duration_secs = d;
                 entry.duration_secs = d;
                 added.push(entry);
             }
@@ -658,14 +692,159 @@ fn remove_clip(state: State<AppState>, id: String) -> Result<Config, String> {
 #[tauri::command]
 fn update_clip(state: State<AppState>, entry: ClipEntry) -> Result<Config, String> {
     let mut cfg = lock(&state.config);
+    let mut trim_changed = false;
     if let Some(c) = cfg.clips.iter_mut().find(|c| c.id == entry.id) {
         c.name = entry.name;
         c.gain = entry.gain.clamp(0.0, 4.0);
         c.hotkey = entry.hotkey;
         c.color = entry.color;
+        let start = entry.trim_start.max(0.0);
+        let end = entry.trim_end.filter(|&e| e > start);
+        if (c.trim_start - start).abs() > 1e-3 || c.trim_end != end {
+            trim_changed = true;
+            c.trim_start = start;
+            c.trim_end = end;
+            if c.full_duration_secs <= 0.0 {
+                c.full_duration_secs = probe_duration(c).unwrap_or(c.duration_secs);
+            }
+            c.duration_secs = c.trimmed_duration();
+        }
     }
     cfg.save(&state.config_path)?;
+    if trim_changed {
+        lock(&state.cache).remove(&entry.id);
+    }
     Ok(cfg.clone())
+}
+
+// ---- URL import (yt-dlp) ---------------------------------------------------------------------
+
+#[tauri::command]
+fn tools_status() -> hotmic_core::ytdlp::ToolStatus {
+    hotmic_core::ytdlp::status()
+}
+
+#[tauri::command]
+async fn tools_install() -> Result<hotmic_core::ytdlp::ToolStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        hotmic_core::ytdlp::install().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn tools_update() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let p = hotmic_core::ytdlp::find().ok_or("yt-dlp is not installed")?;
+        hotmic_core::ytdlp::update(&p).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn yt_options(state: &AppState) -> hotmic_core::ytdlp::Options {
+    hotmic_core::ytdlp::Options {
+        cookies_from_browser: lock(&state.config)
+            .yt_cookies_browser
+            .clone()
+            .filter(|b| !b.trim().is_empty()),
+    }
+}
+
+#[tauri::command]
+async fn yt_probe(app: AppHandle, url: String) -> Result<hotmic_core::ytdlp::VideoInfo, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppState>();
+        let p = hotmic_core::ytdlp::find().ok_or("yt-dlp is not installed")?;
+        hotmic_core::ytdlp::probe(&p, url.trim(), &yt_options(&state)).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct YtProgress {
+    percent: f32,
+    text: String,
+}
+
+/// Download the audio of `url`, store it in the download folder, add it to the library with the
+/// given trim. Progress arrives on the `yt-progress` event.
+#[tauri::command]
+async fn yt_import(
+    app: AppHandle,
+    url: String,
+    name: Option<String>,
+    start: Option<f32>,
+    end: Option<f32>,
+) -> Result<Config, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppState>();
+        let tool = hotmic_core::ytdlp::find().ok_or("yt-dlp is not installed")?;
+        let url = url.trim().to_string();
+        let opts = yt_options(&state);
+
+        let info = hotmic_core::ytdlp::probe(&tool, &url, &opts).map_err(|e| format!("{e:#}"))?;
+        let _ = handle.emit(
+            "yt-progress",
+            YtProgress {
+                percent: 0.0,
+                text: format!("Downloading {}", info.title),
+            },
+        );
+        let file = hotmic_core::ytdlp::download(&tool, &url, &state.download_dir, &opts, |pct, line| {
+            let _ = handle.emit(
+                "yt-progress",
+                YtProgress {
+                    percent: pct,
+                    text: line.to_string(),
+                },
+            );
+        })
+        .map_err(|e| format!("{e:#}"))?;
+
+        let path_str = file.to_string_lossy().into_owned();
+        let id = clip_id(&path_str);
+        let mut entry = ClipEntry {
+            id: id.clone(),
+            name: name
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| info.title.clone()),
+            path: path_str,
+            source_url: info.webpage_url.clone().or(Some(url.clone())),
+            thumbnail: info.thumbnail.clone(),
+            ..Default::default()
+        };
+        entry.full_duration_secs = probe_duration(&entry)?;
+        let start = start.unwrap_or(0.0).max(0.0);
+        entry.trim_start = start;
+        entry.trim_end = end.filter(|&e| e > start && e < entry.full_duration_secs);
+        entry.duration_secs = entry.trimmed_duration();
+
+        let out = {
+            let mut cfg = lock(&state.config);
+            cfg.clips.retain(|c| c.id != id);
+            cfg.clips.push(entry);
+            cfg.save(&state.config_path)?;
+            cfg.clone()
+        };
+        lock(&state.cache).remove(&id);
+        let _ = handle.emit(
+            "yt-progress",
+            YtProgress {
+                percent: 100.0,
+                text: "Added to library".to_string(),
+            },
+        );
+        let h2 = handle.clone();
+        std::thread::spawn(move || prewarm(&h2, vec![id]));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -739,7 +918,13 @@ pub fn run() {
                 .unwrap_or_else(|_| PathBuf::from("hotmic-config.json"));
             let config = Config::load(&config_path);
             log::info!("config at {}", config_path.display());
+            let download_dir = app
+                .path()
+                .audio_dir()
+                .map(|d| d.join("Hotmic"))
+                .unwrap_or_else(|_| config_path.parent().unwrap().join("downloads"));
             let state = AppState {
+                download_dir,
                 config_path,
                 config: Mutex::new(config.clone()),
                 engine: Mutex::new(None),
@@ -779,6 +964,11 @@ pub fn run() {
             play,
             stop_all,
             play_test_tone,
+            tools_status,
+            tools_install,
+            tools_update,
+            yt_probe,
+            yt_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hotmic");

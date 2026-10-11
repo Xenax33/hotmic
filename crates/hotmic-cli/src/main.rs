@@ -23,6 +23,8 @@ enum Cmd {
     Devices,
     /// Decode files and print what the engine would play.
     Probe { files: Vec<PathBuf> },
+    /// yt-dlp helpers: status, install, update, info <url>, get <url> [out_dir].
+    Yt { args: Vec<String> },
     /// Run the engine: mic + clips into the cable. Keys: 1-9 play, T tone, 0 stop, M monitor, Q quit.
     Run {
         /// Mic device id or name substring. Default: system default input.
@@ -72,6 +74,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Devices => cmd_devices(),
         Cmd::Probe { files } => cmd_probe(files),
+        Cmd::Yt { args } => cmd_yt(args),
         Cmd::Run {
             mic,
             cable,
@@ -164,6 +167,69 @@ fn cmd_probe(files: Vec<PathBuf>) -> Result<()> {
             ),
             Err(e) => println!("{}: FAILED: {e:#}", f.display()),
         }
+    }
+    Ok(())
+}
+
+fn cmd_yt(args: Vec<String>) -> Result<()> {
+    use hotmic_core::ytdlp;
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    match sub {
+        "status" => println!("{:#?}", ytdlp::status()),
+        "install" => {
+            let t = Instant::now();
+            let s = ytdlp::install()?;
+            println!(
+                "yt-dlp {:?} {:?}\ndeno   {:?} {:?}\nready={} in {} ms",
+                s.ytdlp_path,
+                s.ytdlp_version,
+                s.deno_path,
+                s.deno_version,
+                s.ready,
+                t.elapsed().as_millis()
+            );
+        }
+        "update" => {
+            let p = ytdlp::find().context("yt-dlp not found")?;
+            println!("{}", ytdlp::update(&p)?);
+        }
+        "info" => {
+            let p = ytdlp::find().context("yt-dlp not found")?;
+            let url = args.get(1).context("usage: yt info <url>")?;
+            let opts = ytdlp::Options {
+                cookies_from_browser: args.get(2).cloned(),
+            };
+            let t = Instant::now();
+            println!("{:#?}", ytdlp::probe(&p, url, &opts)?);
+            println!("({} ms)", t.elapsed().as_millis());
+        }
+        "get" => {
+            let p = ytdlp::find().context("yt-dlp not found")?;
+            let url = args.get(1).context("usage: yt get <url> [out_dir] [browser]")?;
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("spike/clips/yt"));
+            let opts = ytdlp::Options {
+                cookies_from_browser: args.get(3).cloned(),
+            };
+            let t = Instant::now();
+            let file = ytdlp::download(&p, url, &out, &opts, |pct, _| {
+                if (pct as u32) % 25 == 0 {
+                    println!("  {pct:.0}%");
+                }
+            })?;
+            println!("downloaded {} in {} ms", file.display(), t.elapsed().as_millis());
+            let c = Clip::load(&file)?;
+            println!(
+                "decoded: {:.2}s, peak {:.2}, source {} Hz x{}",
+                c.duration_secs(),
+                c.peak(),
+                c.source_rate,
+                c.source_channels
+            );
+        }
+        other => anyhow::bail!("unknown yt subcommand {other}"),
     }
     Ok(())
 }

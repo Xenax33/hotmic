@@ -184,36 +184,33 @@ User flow: paste a URL (or drag a link onto the window), see title and duration,
 start and end times, click Import. A progress bar runs, and the clip appears in the library with
 the video title as its name and the thumbnail as its button art.
 
-### How
+### How (as built, 2026-10-12)
 
-- **yt-dlp** does the download. It is the de facto standard, Unlicense, ships a standalone
-  `yt-dlp.exe`, and has a `-U` self-update because YouTube breaks downloaders every few months.
-- **ffmpeg** is required by yt-dlp both for MP3 conversion (`-x --audio-format mp3`) and for
-  time-range trimming (`--download-sections "*1:20-1:25"`). Use an LGPL static build.
-- Both are run as **Tauri sidecars** (`tauri-plugin-shell`, `bundle.externalBin`, binaries named
-  with the `-x86_64-pc-windows-msvc.exe` suffix). Lock the shell capability down to those two
-  binaries with argument validators so the UI cannot pass arbitrary flags.
-- Command the app runs, roughly:
+- **yt-dlp** does the download. De facto standard, Unlicense, single `yt-dlp.exe`, `-U` self
+  update because YouTube breaks downloaders every few months.
+- **No ffmpeg.** We request YouTube's native audio track (`-f bestaudio[ext=m4a]/bestaudio`),
+  which the engine decodes itself (symphonia, Media Foundation fallback). No re-encode, no
+  100 MB dependency. Time-range trimming is done in Hotmic on the decoded audio and stored as
+  `trim_start` / `trim_end` on the clip, so it is non-destructive and editable later.
+- **Deno** is required. Since 2025 yt-dlp needs a JavaScript runtime to solve YouTube's player
+  challenges; without one YouTube answers "sign in to confirm you're not a bot". Hotmic passes
+  `--js-runtimes deno:<path>`.
+- Both tools are downloaded on first use into `%LOCALAPPDATA%\hotmic\bin` from their official
+  GitHub releases and verified against the published SHA-256 (yt-dlp's `SHA2-256SUMS`, Deno's
+  PowerShell-style `.sha256sum`). About 62 MB total. Nothing is bundled in the installer.
+- Run as plain child processes with `CREATE_NO_WINDOW`, progress parsed from `--newline`
+  output, final path from `--print after_move:filepath`.
+- Optional `--cookies-from-browser` (Chrome, Edge, Firefox, Brave) for logged-in access when
+  YouTube still rate limits an address.
+- Any URL yt-dlp supports works (SoundCloud, Twitter, Twitch clips, direct links).
 
-  ```
-  yt-dlp -x --audio-format mp3 --audio-quality 0 --download-sections "*START-END" \
-         --no-playlist --embed-thumbnail -o "<library>/%(title)s.%(ext)s" <URL>
-  ```
+### Caveats
 
-- Parse yt-dlp's progress lines from stdout to drive the progress bar. Run `yt-dlp -U` in the
-  background on a weekly timer and expose a "Update downloader" button.
-- Also accept any URL yt-dlp supports (SoundCloud, Twitter, Twitch clips, direct MP3 links). No
-  extra work, it is the same command.
-
-### Decisions and caveats
-
-- Bundling adds roughly 100 MB for ffmpeg plus 17 MB for yt-dlp. Alternative: download them on
-  first use into `%LOCALAPPDATA%\hotmic\bin` with SHA-256 checks. Decide at Phase 2 based on
-  how big the installer feels. Start with bundling, it is simpler and works offline.
-- A pure-Rust path exists (rustypipe) but it needs a separate "botguard" helper binary and its
-  last release was April 2025. Not worth the risk, yt-dlp has far more eyes on it.
-- Storing in MP3 is a re-encode (YouTube serves Opus or AAC). Quality loss is inaudible for a
-  soundboard. If you ever want lossless, keep the original Opus and let symphonia decode it.
+- YouTube rate limits (HTTP 429) show up after a handful of requests from one address; the
+  browser-cookies option is the escape hatch.
+- Legal note for the README: YouTube's terms forbid downloading except where they provide a
+  button. Personal use of content you have the right to use. Same stance as every other
+  open-source tool in this space.
 - Legal note for the README: YouTube's terms forbid downloading except where they provide a
   button. This feature is for personal use of content you have the right to use. Same stance
   as every other open-source tool in this space.

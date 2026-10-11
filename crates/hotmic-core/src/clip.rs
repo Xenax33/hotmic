@@ -168,6 +168,26 @@ impl Clip {
         gain
     }
 
+    /// Non-destructive trim: a new clip holding only `start_secs..end_secs`. Out-of-range values
+    /// are clamped, and a range that collapses to nothing yields the untouched clip.
+    pub fn trimmed(&self, start_secs: f32, end_secs: Option<f32>) -> Clip {
+        let frames = self.frames();
+        let start = ((start_secs.max(0.0) * SAMPLE_RATE as f32) as usize).min(frames);
+        let end = end_secs
+            .map(|e| ((e.max(0.0) * SAMPLE_RATE as f32) as usize).min(frames))
+            .unwrap_or(frames);
+        if start == 0 && end == frames || end <= start {
+            return self.clone();
+        }
+        Clip {
+            name: self.name.clone(),
+            path: self.path.clone(),
+            samples: self.samples[start * CHANNELS..end * CHANNELS].into(),
+            source_rate: self.source_rate,
+            source_channels: self.source_channels,
+        }
+    }
+
     pub fn frames(&self) -> usize {
         self.samples.len() / CHANNELS
     }
