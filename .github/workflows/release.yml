@@ -1,0 +1,52 @@
+# Push a tag like v0.1.0 and this builds the Windows installer on GitHub's runners and
+# publishes it as a GitHub Release with release notes generated from the commits.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install the Tauri CLI
+        run: cargo binstall tauri-cli --version "^2" --locked -y --no-confirm
+
+      - name: Build the installer
+        working-directory: crates/hotmic-app
+        run: cargo tauri build
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $out = "target/release/bundle/nsis"
+          Get-ChildItem $out -Filter *.exe | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii "$out/SHA256SUMS.txt"
+          Get-Content "$out/SHA256SUMS.txt"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

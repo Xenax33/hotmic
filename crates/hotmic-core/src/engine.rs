@@ -86,6 +86,7 @@ struct Levels {
     ring_fill: AtomicU32,
     callbacks: AtomicU64,
     ratio_ppm: AtomicU32,
+    active_voices: AtomicU32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -99,6 +100,8 @@ pub struct LevelSnapshot {
     pub output_callbacks: u64,
     /// Current drift correction, in parts per million away from nominal.
     pub drift_ppm: i32,
+    /// Clips currently playing (after this block was mixed).
+    pub active_voices: u32,
 }
 
 pub struct EngineInfo {
@@ -298,6 +301,9 @@ impl Engine {
 
                         levels.mic_peak.store(peak(mic).to_bits(), Ordering::Relaxed);
                         levels.out_peak.store(peak(data).to_bits(), Ordering::Relaxed);
+                        levels
+                            .active_voices
+                            .store(mixer.active() as u32, Ordering::Relaxed);
                         levels.callbacks.fetch_add(1, Ordering::Relaxed);
                     },
                     move |e| {
@@ -420,6 +426,7 @@ impl Engine {
             ring_fill_frames: self.levels.ring_fill.load(Ordering::Relaxed),
             output_callbacks: self.levels.callbacks.load(Ordering::Relaxed),
             drift_ppm: self.levels.ratio_ppm.load(Ordering::Relaxed) as i32,
+            active_voices: self.levels.active_voices.load(Ordering::Relaxed),
         }
     }
 

@@ -157,6 +157,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .tile:focus-vis
 .status .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .status .live.on::before { background: var(--ok); }
 .status .live.err::before { background: var(--warn); }
+.status .pttflag { color: var(--accent); font-weight: 600; }
 
 /* ---- hotkeys page ---- */
 .hklist { margin-top: 18px; display: grid; gap: 2px; max-width: 640px; }

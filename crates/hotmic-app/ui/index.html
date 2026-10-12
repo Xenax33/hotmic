@@ -131,6 +131,16 @@
         </div>
       </section>
       <section>
+        <h2>Push-to-talk</h2>
+        <div class="form">
+          <label class="row"><input type="checkbox" id="chk-ptt" /> Hold my Discord push-to-talk key while a clip plays</label>
+          <label>Push-to-talk key
+            <div class="keyrow"><input type="text" id="key-ptt" class="keycap" readonly placeholder="click, then press the key or a mouse side button" /><button type="button" class="btn small" id="key-ptt-clear">Clear</button></div>
+            <span class="hint">Set Discord's Input Mode to Push to Talk with the same key. Hotmic presses it for the length of each clip plus a short tail, so nothing gets cut by voice activity. Your own talking still needs the key as usual.</span>
+          </label>
+        </div>
+      </section>
+      <section>
         <h2>Setup</h2>
         <div class="form"><button type="button" class="btn" id="btn-wizard">Run the setup check</button></div>
       </section>
@@ -178,6 +188,7 @@
     <span class="live" id="status-live">starting</span>
     <span id="status-rate"></span>
     <span id="status-drift"></span>
+    <span id="status-ptt" class="pttflag hidden">PTT held</span>
     <span class="spacer"></span>
     <span id="status-hint">Discord input: CABLE Output</span>
     <button type="button" class="linkish" id="btn-engine">Stop engine</button>

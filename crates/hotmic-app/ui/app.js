@@ -132,6 +132,36 @@ function setKeyInput(input, value) {
   input.dataset.value = value || "";
   input.value = prettyHotkey(value || "");
 }
+
+// Single key (no modifiers) or a mouse side button, for push-to-talk.
+function bindSingleKeyCapture(input, clearBtn, onChange) {
+  input.addEventListener("keydown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") return input.blur();
+    input.dataset.value = e.code;
+    input.value = prettyHotkey(e.code);
+    input.blur();
+    onChange(e.code);
+  });
+  input.addEventListener("mousedown", (e) => {
+    if (e.button === 3 || e.button === 4) {
+      e.preventDefault();
+      const code = e.button === 3 ? "Mouse4" : "Mouse5";
+      input.dataset.value = code;
+      input.value = code === "Mouse4" ? "Mouse 4 (back)" : "Mouse 5 (forward)";
+      input.blur();
+      onChange(code);
+    }
+  });
+  input.addEventListener("focus", () => (input.placeholder = "press the key now, Esc to cancel"));
+  input.addEventListener("blur", () => (input.placeholder = "click, then press the key or a mouse side button"));
+  clearBtn.addEventListener("click", () => {
+    input.dataset.value = "";
+    input.value = "";
+    onChange(null);
+  });
+}
 async function applyHotkeys() {
   const errors = await invoke("apply_hotkeys");
   if (errors.length) showBanner("Hotkey problems: " + errors.join(" | "), "err");
@@ -188,6 +218,10 @@ async function loadDevices() {
   $("chk-block-voice").checked = !!config.block_voice;
   $("chk-tray").checked = !!config.close_to_tray;
   $("chk-minimized").checked = !!config.start_minimized;
+  $("chk-ptt").checked = !!config.ptt_enabled;
+  const pk = $("key-ptt");
+  pk.dataset.value = config.ptt_key || "";
+  pk.value = config.ptt_key === "Mouse4" ? "Mouse 4 (back)" : config.ptt_key === "Mouse5" ? "Mouse 5 (forward)" : prettyHotkey(config.ptt_key || "");
   try {
     $("chk-login").checked = await invoke("autostart_enabled");
   } catch (_) {
@@ -274,6 +308,15 @@ function bindMixer() {
   });
   $("btn-hide").addEventListener("click", () => invoke("hide_to_tray"));
   $("btn-quit").addEventListener("click", () => invoke("quit_app"));
+  $("chk-ptt").addEventListener("change", async (e) => {
+    config.ptt_enabled = e.target.checked;
+    await saveConfig();
+    if (config.ptt_enabled && !config.ptt_key) showBanner("Push-to-talk is on but no key is set yet. Click the key field and press your Discord PTT key.", "");
+  });
+  bindSingleKeyCapture($("key-ptt"), $("key-ptt-clear"), async (code) => {
+    config.ptt_key = code;
+    await saveConfig();
+  });
   bindKeyCapture($("key-stopall"), $("key-stopall-clear"), async (h) => {
     config.stop_all_hotkey = h;
     await saveConfig();
@@ -337,6 +380,7 @@ async function pollLevels() {
     $("meter-mic-v").textContent = l ? (mic > 0.001 ? Math.round(20 * Math.log10(mic)) : "-inf") : "off";
     $("meter-out-v").textContent = l ? (out > 0.001 ? Math.round(20 * Math.log10(out)) : "-inf") : "off";
     $("status-drift").textContent = l ? `drift ${l.drift_ppm} ppm` : "";
+    $("status-ptt").classList.toggle("hidden", !(l && l.ptt_held));
   } catch (_) {
     /* engine gone */
   }

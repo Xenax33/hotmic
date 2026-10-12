@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+pub mod ptt;
+
 const AUDIO_EXTS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "aiff", "aif"];
 /// Decoded audio kept in RAM at most. 512 MB is about 50 minutes of clips.
 const CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
@@ -109,6 +111,10 @@ pub struct Config {
     pub start_minimized: bool,
     /// The first-run setup check has been completed or dismissed.
     pub setup_done: bool,
+    /// Auto push-to-talk: hold `ptt_key` while a clip plays.
+    pub ptt_enabled: bool,
+    /// KeyboardEvent.code name ("KeyV", "F13", "Numpad0") or "Mouse4" / "Mouse5".
+    pub ptt_key: Option<String>,
     pub clips: Vec<ClipEntry>,
 }
 
@@ -133,6 +139,8 @@ impl Default for Config {
             close_to_tray: true,
             start_minimized: true,
             setup_done: false,
+            ptt_enabled: false,
+            ptt_key: None,
             clips: Vec::new(),
         }
     }
@@ -246,6 +254,7 @@ pub struct AppState {
     hotkeys: Mutex<HashMap<String, HotkeyAction>>,
     /// Where URL imports are saved.
     download_dir: PathBuf,
+    ptt: Arc<ptt::PttState>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,6 +276,8 @@ pub struct Levels {
     pub ring_fill_frames: u32,
     pub drift_ppm: i32,
     pub callbacks: u64,
+    pub active_voices: u32,
+    pub ptt_held: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -592,6 +603,7 @@ fn engine_status(state: State<AppState>) -> EngineStatus {
 #[tauri::command]
 fn levels(state: State<AppState>) -> Option<Levels> {
     let engine = lock(&state.engine);
+    let held = state.ptt.held.load(Ordering::Relaxed);
     engine.as_ref().map(|e| {
         let l = e.levels();
         Levels {
@@ -600,6 +612,8 @@ fn levels(state: State<AppState>) -> Option<Levels> {
             ring_fill_frames: l.ring_fill_frames,
             drift_ppm: l.drift_ppm,
             callbacks: l.output_callbacks,
+            active_voices: l.active_voices,
+            ptt_held: held,
         }
     })
 }
@@ -1133,6 +1147,7 @@ pub fn run() {
                 last_error: Mutex::new(None),
                 adding: AtomicBool::new(false),
                 hotkeys: Mutex::new(HashMap::new()),
+                ptt: Arc::new(ptt::PttState::default()),
             };
             if config.autostart_engine {
                 if let Err(e) = state.start_engine() {
@@ -1145,6 +1160,33 @@ pub fn run() {
             }
             if let Err(e) = build_tray(app.handle()) {
                 log::warn!("tray icon unavailable: {e}");
+            }
+
+            // Auto push-to-talk watcher: holds the configured key while any clip plays.
+            {
+                let handle = app.handle().clone();
+                let ptt_state = handle.state::<AppState>().ptt.clone();
+                std::thread::spawn(move || {
+                    let h1 = handle.clone();
+                    let h2 = handle.clone();
+                    ptt::run_loop(
+                        ptt_state,
+                        move || {
+                            let st = h1.state::<AppState>();
+                            let cfg = lock(&st.config);
+                            if !cfg.ptt_enabled {
+                                return None;
+                            }
+                            cfg.ptt_key.as_deref().and_then(ptt::parse)
+                        },
+                        move || {
+                            let st = h2.state::<AppState>();
+                            let engine = lock(&st.engine);
+                            engine.as_ref().map(|e| e.levels().active_voices).unwrap_or(0)
+                        },
+                        std::time::Duration::from_millis(200),
+                    );
+                });
             }
             let minimized = std::env::args().any(|a| a == "--minimized");
             if minimized && config.start_minimized {
@@ -1186,6 +1228,17 @@ pub fn run() {
             setup_checks,
             setup_selftest,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Hotmic");
+        .build(tauri::generate_context!())
+        .expect("error while building Hotmic")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Never leave the user's push-to-talk key stuck down.
+                let state = app.state::<AppState>();
+                if state.ptt.held.load(Ordering::Relaxed) {
+                    if let Some(k) = lock(&state.config).ptt_key.as_deref().and_then(ptt::parse) {
+                        ptt::send(k, false);
+                    }
+                }
+            }
+        });
 }
