@@ -186,6 +186,13 @@ async function loadDevices() {
   fillSelect($("sel-monitor"), devices.filter((d) => d.is_output), config.monitor, true);
   $("chk-autostart").checked = !!config.autostart_engine;
   $("chk-block-voice").checked = !!config.block_voice;
+  $("chk-tray").checked = !!config.close_to_tray;
+  $("chk-minimized").checked = !!config.start_minimized;
+  try {
+    $("chk-login").checked = await invoke("autostart_enabled");
+  } catch (_) {
+    $("chk-login").disabled = true;
+  }
 }
 
 function renderMixer() {
@@ -249,6 +256,24 @@ function bindMixer() {
     config.block_voice = e.target.checked;
     await saveConfig();
   });
+  $("chk-tray").addEventListener("change", async (e) => {
+    config.close_to_tray = e.target.checked;
+    await saveConfig();
+  });
+  $("chk-minimized").addEventListener("change", async (e) => {
+    config.start_minimized = e.target.checked;
+    await saveConfig();
+  });
+  $("chk-login").addEventListener("change", async (e) => {
+    try {
+      e.target.checked = await invoke("set_autostart", { enabled: e.target.checked });
+    } catch (err) {
+      showBanner("Could not change start-at-sign-in: " + err, "err");
+      e.target.checked = !e.target.checked;
+    }
+  });
+  $("btn-hide").addEventListener("click", () => invoke("hide_to_tray"));
+  $("btn-quit").addEventListener("click", () => invoke("quit_app"));
   bindKeyCapture($("key-stopall"), $("key-stopall-clear"), async (h) => {
     config.stop_all_hotkey = h;
     await saveConfig();

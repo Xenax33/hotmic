@@ -103,6 +103,10 @@ pub struct Config {
     pub stop_all_hotkey: Option<String>,
     /// Browser whose YouTube login yt-dlp may use ("chrome", "edge", "firefox"), or None.
     pub yt_cookies_browser: Option<String>,
+    /// Closing the window hides it to the tray and keeps the engine running.
+    pub close_to_tray: bool,
+    /// When launched by Windows at login, start hidden in the tray.
+    pub start_minimized: bool,
     pub clips: Vec<ClipEntry>,
 }
 
@@ -124,6 +128,8 @@ impl Default for Config {
             playback_mode: "replace".to_string(),
             stop_all_hotkey: None,
             yt_cookies_browser: None,
+            close_to_tray: true,
+            start_minimized: true,
             clips: Vec::new(),
         }
     }
@@ -899,6 +905,88 @@ fn play_test_tone(state: State<AppState>) -> Result<u64, String> {
     Ok(e.play(Arc::new(Clip::tone(440.0, 1.0))))
 }
 
+// ---- Tray, autostart, lifecycle ---------------------------------------------------------------
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(app, "show", "Show Hotmic", true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "stop", "Stop all clips", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[&show, &stop, &PredefinedMenuItem::separator(app)?, &quit],
+    )?;
+
+    let mut builder = TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("Hotmic")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main(app),
+            "stop" => {
+                let state = app.state::<AppState>();
+                if let Some(e) = lock(&state.engine).as_ref() {
+                    e.stop_all();
+                }
+                let _ = app.emit("clips-stopped", ());
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn autostart_enabled(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let al = app.autolaunch();
+    let r = if enabled { al.enable() } else { al.disable() };
+    r.map_err(|e| e.to_string())?;
+    Ok(al.is_enabled().unwrap_or(enabled))
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
+fn hide_to_tray(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+}
+
 // ------------------------------------------------------------------------------------------------
 // Entry
 // ------------------------------------------------------------------------------------------------
@@ -908,8 +996,25 @@ pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // A second launch just brings the running one forward.
+            show_main(app);
+        }))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.app_handle().state::<AppState>();
+                if lock(&state.config).close_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -970,6 +1075,15 @@ pub fn run() {
             for e in sync_hotkeys(app.handle()) {
                 log::warn!("hotkey: {e}");
             }
+            if let Err(e) = build_tray(app.handle()) {
+                log::warn!("tray icon unavailable: {e}");
+            }
+            let minimized = std::env::args().any(|a| a == "--minimized");
+            if minimized && config.start_minimized {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
 
             // Warm the cache with the saved library, off the UI thread.
             let ids: Vec<String> = config.clips.iter().map(|c| c.id.clone()).collect();
@@ -997,6 +1111,10 @@ pub fn run() {
             tools_update,
             yt_probe,
             yt_import,
+            autostart_enabled,
+            set_autostart,
+            quit_app,
+            hide_to_tray,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hotmic");
