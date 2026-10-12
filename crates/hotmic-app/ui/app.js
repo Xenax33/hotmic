@@ -2,16 +2,21 @@
 
 const tauri = window.__TAURI__;
 const invoke = tauri.core.invoke;
+const appWindow = tauri.window.getCurrentWindow();
 
 const $ = (id) => document.getElementById(id);
-const COLORS = ["", "#3b2f4a", "#2f3f4a", "#2f4a3a", "#4a3f2f", "#4a2f2f", "#333a4a"];
+const COLORS = ["", "#5b3a8a", "#2f6f8a", "#3a7a5a", "#7a6a2a", "#8a3a3a", "#3a4a7a"];
 const AUDIO_EXTS = ["mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "aiff", "aif"];
+const MONITOR_OFF = "__none__";
 
 let config = null;
 let devices = [];
 let status = null;
-let playing = new Map(); // clip id -> { until: timestamp }
+let playing = new Map(); // clip id -> { start, dur }
 let editing = null;
+let filter = "all";
+let ytInfo = null;
+let adding = false;
 
 // ---------------------------------------------------------------------------------------------
 // Helpers
@@ -20,9 +25,27 @@ function fmtDur(s) {
   if (!s || s < 0) return "";
   const m = Math.floor(s / 60);
   const r = Math.round(s - m * 60);
-  return m ? `${m}:${String(r).padStart(2, "0")}` : `${s.toFixed(1)}s`;
+  return `${m}:${String(r).padStart(2, "0")}`;
 }
-
+function fmtTime(s) {
+  if (s == null) return "";
+  const m = Math.floor(s / 60);
+  const r = s - m * 60;
+  return `${m}:${r < 10 ? "0" : ""}${r.toFixed(r % 1 ? 1 : 0)}`;
+}
+// "1:23", "83", "1:02:03" -> seconds; empty -> null
+function parseTime(s) {
+  s = (s || "").trim();
+  if (!s) return null;
+  const parts = s.split(":").map((p) => parseFloat(p));
+  if (parts.some((p) => Number.isNaN(p))) return null;
+  return parts.reduce((acc, p) => acc * 60 + p, 0);
+}
+function db(gain) {
+  if (gain <= 0.0001) return "off";
+  const d = 20 * Math.log10(gain);
+  return (d >= 0 ? "+" : "") + d.toFixed(1) + " dB";
+}
 function showBanner(text, kind) {
   const b = $("banner");
   if (!text) {
@@ -32,70 +55,44 @@ function showBanner(text, kind) {
   b.textContent = text;
   b.className = "banner" + (kind === "err" ? " err" : "");
 }
-
 async function saveConfig() {
   config = await invoke("save_config", { config });
 }
-
-// ---------------------------------------------------------------------------------------------
-// Devices and settings
-// ---------------------------------------------------------------------------------------------
-const MONITOR_OFF = "__none__";
-
-function fillSelect(sel, list, current, allowNone) {
-  sel.innerHTML = "";
-  if (allowNone) {
-    // monitor select: "" = system default output, MONITOR_OFF = no monitor at all
-    const d = document.createElement("option");
-    d.value = "";
-    d.textContent = "(default output)";
-    sel.appendChild(d);
-    const o = document.createElement("option");
-    o.value = MONITOR_OFF;
-    o.textContent = "(none)";
-    sel.appendChild(o);
-    if (current === null || current === undefined) {
-      current = MONITOR_OFF;
-    }
-  }
-  for (const d of list) {
-    const o = document.createElement("option");
-    o.value = d.id;
-    o.textContent = d.name + (d.is_default_input || d.is_default_output ? "  (default)" : "");
-    sel.appendChild(o);
-  }
-  // current may be an id, a name substring, or empty (= system default)
-  let match = list.find((d) => d.id === current);
-  if (!match && current) {
-    const c = current.toLowerCase();
-    match = list.find((d) => d.name.toLowerCase().includes(c));
-  }
-  if (!match && !current && !allowNone) {
-    match = list.find((d) => d.is_default_input || d.is_default_output) || list[0];
-  }
-  if (!match && allowNone) {
-    sel.value = current === MONITOR_OFF ? MONITOR_OFF : "";
-    return;
-  }
-  sel.value = match ? match.id : "";
-}
-
-async function loadDevices() {
-  devices = await invoke("list_devices");
-  const ins = devices.filter((d) => d.is_input);
-  const outs = devices.filter((d) => d.is_output);
-  fillSelect($("sel-mic"), ins, config.mic, false);
-  fillSelect($("sel-cable"), outs, config.cable, false);
-  fillSelect($("sel-monitor"), outs, config.monitor, true);
-  $("chk-monitor").checked = !!config.monitor_enabled;
+function short(n) {
+  return (n || "").replace(/\s*\(.*\)\s*$/, "");
 }
 
 // ---------------------------------------------------------------------------------------------
-// Hotkeys
+// Window chrome and views
+// ---------------------------------------------------------------------------------------------
+function bindWindow() {
+  $("wc-min").addEventListener("click", () => appWindow.minimize());
+  $("wc-max").addEventListener("click", () => appWindow.toggleMaximize());
+  $("wc-close").addEventListener("click", () => appWindow.close());
+}
+
+function showView(name) {
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("hidden", v.id !== "view-" + name));
+  document.querySelectorAll(".rail button").forEach((b) => {
+    if (b.dataset.view === name) b.setAttribute("aria-current", "page");
+    else b.removeAttribute("aria-current");
+  });
+  if (name === "hotkeys") renderHotkeys();
+  if (name === "settings") loadDevices();
+}
+
+function bindViews() {
+  document.querySelectorAll(".rail button").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
+  $("btn-go-import").addEventListener("click", () => {
+    showView("import");
+    $("yt-url").focus();
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hotkey capture
 // ---------------------------------------------------------------------------------------------
 const MOD_CODES = new Set(["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"]);
-
-// Turn a keydown into the string the Rust side parses, e.g. "Ctrl+Alt+Digit1".
 function hotkeyFromEvent(e) {
   if (MOD_CODES.has(e.code)) return null;
   const parts = [];
@@ -106,25 +103,15 @@ function hotkeyFromEvent(e) {
   parts.push(e.code);
   return parts.join("+");
 }
-
 function prettyHotkey(h) {
   if (!h) return "";
-  return h
-    .replace(/Digit(\d)/, "$1")
-    .replace(/Key([A-Z])/, "$1")
-    .replace(/Numpad/, "Num ")
-    .replace(/Arrow/, "");
+  return h.replace(/Digit(\d)/, "$1").replace(/Key([A-Z])/, "$1").replace(/Numpad/, "Num ").replace(/Arrow/, "").replace(/\+/g, " ");
 }
-
-// Makes a readonly input capture a hotkey. onChange(stringOrNull) is called on every change.
 function bindKeyCapture(input, clearBtn, onChange) {
   input.addEventListener("keydown", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.key === "Escape") {
-      input.blur();
-      return;
-    }
+    if (e.key === "Escape") return input.blur();
     const h = hotkeyFromEvent(e);
     if (!h) return;
     input.dataset.value = h;
@@ -132,84 +119,144 @@ function bindKeyCapture(input, clearBtn, onChange) {
     input.blur();
     onChange(h);
   });
-  input.addEventListener("focus", () => {
-    input.placeholder = "press keys now (Esc to cancel)";
-  });
-  input.addEventListener("blur", () => {
-    input.placeholder = "click, then press keys";
-  });
-  clearBtn.addEventListener("click", () => {
-    input.dataset.value = "";
-    input.value = "";
-    onChange(null);
-  });
+  input.addEventListener("focus", () => (input.placeholder = "press keys now, Esc to cancel"));
+  input.addEventListener("blur", () => (input.placeholder = "click, then press keys"));
+  if (clearBtn)
+    clearBtn.addEventListener("click", () => {
+      input.dataset.value = "";
+      input.value = "";
+      onChange(null);
+    });
 }
-
 function setKeyInput(input, value) {
   input.dataset.value = value || "";
   input.value = prettyHotkey(value || "");
 }
-
 async function applyHotkeys() {
   const errors = await invoke("apply_hotkeys");
   if (errors.length) showBanner("Hotkey problems: " + errors.join(" | "), "err");
   else if ($("banner").textContent.startsWith("Hotkey problems")) showBanner("");
+  $("stop-kbd").textContent = prettyHotkey(config.stop_all_hotkey || "");
 }
 
-function renderSettings() {
-  $("mode-replace").checked = config.playback_mode !== "layer";
-  $("mode-layer").checked = config.playback_mode === "layer";
-  setKeyInput($("key-stopall"), config.stop_all_hotkey);
+// ---------------------------------------------------------------------------------------------
+// Devices and settings
+// ---------------------------------------------------------------------------------------------
+function fillSelect(sel, list, current, allowNone) {
+  sel.innerHTML = "";
+  if (allowNone) {
+    const d = document.createElement("option");
+    d.value = "";
+    d.textContent = "(default output)";
+    sel.appendChild(d);
+    const o = document.createElement("option");
+    o.value = MONITOR_OFF;
+    o.textContent = "(none)";
+    sel.appendChild(o);
+    if (current === null || current === undefined) current = MONITOR_OFF;
+  }
+  for (const d of list) {
+    const o = document.createElement("option");
+    o.value = d.id;
+    o.textContent = d.name + (d.is_default_input || d.is_default_output ? "  (default)" : "");
+    sel.appendChild(o);
+  }
+  let match = list.find((d) => d.id === current);
+  if (!match && current && current !== MONITOR_OFF) {
+    const c = current.toLowerCase();
+    match = list.find((d) => d.name.toLowerCase().includes(c));
+  }
+  if (!match && !current && !allowNone) match = list.find((d) => d.is_default_input || d.is_default_output) || list[0];
+  if (!match && allowNone) {
+    sel.value = current === MONITOR_OFF ? MONITOR_OFF : "";
+    return;
+  }
+  sel.value = match ? match.id : "";
+}
+
+async function loadDevices() {
+  try {
+    devices = await invoke("list_devices");
+  } catch (e) {
+    showBanner("Could not list devices: " + e, "err");
+    return;
+  }
+  fillSelect($("sel-mic"), devices.filter((d) => d.is_input), config.mic, false);
+  fillSelect($("sel-cable"), devices.filter((d) => d.is_output), config.cable, false);
+  fillSelect($("sel-monitor"), devices.filter((d) => d.is_output), config.monitor, true);
+  $("chk-autostart").checked = !!config.autostart_engine;
+  $("chk-block-voice").checked = !!config.block_voice;
+}
+
+function renderMixer() {
   $("rng-mic-gain").value = config.mic_gain;
   $("rng-clip-gain").value = config.clip_gain;
   $("rng-duck").value = config.duck;
-  $("chk-normalize").checked = !!config.normalize;
-  $("val-mic-gain").textContent = config.mic_gain.toFixed(2);
-  $("val-clip-gain").textContent = config.clip_gain.toFixed(2);
-  $("val-duck").textContent = config.duck >= 0.999 ? "no ducking" : Math.round(config.duck * 100) + "%";
+  $("val-mic-gain").textContent = db(config.mic_gain);
+  $("val-clip-gain").textContent = db(config.clip_gain);
+  $("val-duck").textContent = config.duck >= 0.999 ? "no ducking" : db(config.duck);
+  $("sw-monitor").setAttribute("aria-checked", String(!!config.monitor_enabled && config.monitor !== null));
+  $("sw-replace").setAttribute("aria-checked", String(config.playback_mode !== "layer"));
+  $("sw-normalize").setAttribute("aria-checked", String(!!config.normalize));
+  setKeyInput($("key-stopall"), config.stop_all_hotkey);
+  $("stop-kbd").textContent = prettyHotkey(config.stop_all_hotkey || "");
+  $("yt-cookies").value = config.yt_cookies_browser || "";
 }
 
-function bindSettings() {
-  const live = (id, key, fmt) => {
+function bindMixer() {
+  const live = (id, key) => {
     $(id).addEventListener("input", (e) => {
       config[key] = parseFloat(e.target.value);
-      renderSettings();
+      renderMixer();
     });
     $(id).addEventListener("change", saveConfig);
-    void fmt;
   };
   live("rng-mic-gain", "mic_gain");
   live("rng-clip-gain", "clip_gain");
   live("rng-duck", "duck");
-  $("chk-normalize").addEventListener("change", async (e) => {
-    config.normalize = e.target.checked;
+
+  $("sw-monitor").addEventListener("click", async () => {
+    if (config.monitor === null) config.monitor = ""; // turning on with no device picks the default output
+    config.monitor_enabled = !config.monitor_enabled;
+    renderMixer();
+    await saveConfig();
+    refreshStatus();
+  });
+  $("sw-replace").addEventListener("click", async () => {
+    config.playback_mode = config.playback_mode === "layer" ? "replace" : "layer";
+    renderMixer();
     await saveConfig();
   });
-  for (const id of ["mode-replace", "mode-layer"]) {
-    $(id).addEventListener("change", async (e) => {
-      if (e.target.checked) {
-        config.playback_mode = e.target.value;
-        await saveConfig();
-      }
-    });
-  }
+  $("sw-normalize").addEventListener("click", async () => {
+    config.normalize = !config.normalize;
+    renderMixer();
+    await saveConfig();
+  });
+
+  $("btn-apply-devices").addEventListener("click", async () => {
+    config.mic = $("sel-mic").value;
+    config.cable = $("sel-cable").value;
+    config.monitor = $("sel-monitor").value === MONITOR_OFF ? null : $("sel-monitor").value;
+    await saveConfig();
+    await startEngine();
+    renderMixer();
+  });
+  $("chk-autostart").addEventListener("change", async (e) => {
+    config.autostart_engine = e.target.checked;
+    await saveConfig();
+  });
+  $("chk-block-voice").addEventListener("change", async (e) => {
+    config.block_voice = e.target.checked;
+    await saveConfig();
+  });
   bindKeyCapture($("key-stopall"), $("key-stopall-clear"), async (h) => {
     config.stop_all_hotkey = h;
     await saveConfig();
     await applyHotkeys();
   });
-  $("chk-monitor").addEventListener("change", async (e) => {
-    config.monitor_enabled = e.target.checked;
+  $("yt-cookies").addEventListener("change", async (e) => {
+    config.yt_cookies_browser = e.target.value || null;
     await saveConfig();
-    refreshStatus();
-  });
-  $("btn-apply-devices").addEventListener("click", async () => {
-    config.mic = $("sel-mic").value;
-    config.cable = $("sel-cable").value;
-    config.monitor = $("sel-monitor").value === MONITOR_OFF ? null : $("sel-monitor").value;
-    config.monitor_enabled = $("chk-monitor").checked;
-    await saveConfig();
-    await startEngine();
   });
 }
 
@@ -228,32 +275,31 @@ async function startEngine() {
   $("btn-engine").disabled = false;
   renderStatus();
 }
-
 async function refreshStatus() {
   status = await invoke("engine_status");
   renderStatus();
 }
-
 function renderStatus() {
-  const dot = $("engine-dot");
-  const txt = $("engine-status");
   if (!status) return;
+  const dot = $("engine-dot");
+  const live = $("status-live");
   if (status.running) {
     dot.className = "dot on";
-    const short = (n) => (n || "").replace(/\s*\(.*\)\s*$/, "");
-    txt.textContent = `${short(status.mic_name)} to ${short(status.cable_name)}` + (status.monitor_on ? ", monitor on" : "");
-    txt.title = `${status.mic_name} to ${status.cable_name}`;
+    live.className = "live on";
+    live.textContent = "Engine running";
+    $("engine-route").textContent = `${short(status.mic_name)} to ${short(status.cable_name)}` + (status.monitor_on ? `, monitor ${short(status.monitor_name)}` : "");
+    $("status-rate").textContent = `${status.mic_rate ? status.mic_rate / 1000 : 48} kHz mic, 48 kHz out`;
     $("btn-engine").textContent = "Stop engine";
   } else {
     dot.className = status.error ? "dot err" : "dot";
-    txt.textContent = status.error ? "stopped (error)" : "stopped";
+    live.className = status.error ? "live err" : "live";
+    live.textContent = status.error ? "Engine error" : "Engine stopped";
+    $("engine-route").textContent = status.error ? "stopped" : "stopped";
+    $("status-rate").textContent = "";
     $("btn-engine").textContent = "Start engine";
   }
-  if (!status.vb_cable_installed) {
-    showBanner("VB-Cable is not installed. Hotmic needs it to create the virtual microphone. Get it from vb-audio.com/Cable (free).", "err");
-  } else if (status.error) {
-    showBanner("Engine error: " + status.error, "err");
-  }
+  if (!status.vb_cable_installed) showBanner("VB-Cable is not installed. Hotmic needs it for the virtual microphone. Get it free from vb-audio.com/Cable, then restart Hotmic.", "err");
+  else if (status.error) showBanner("Engine error: " + status.error, "err");
 }
 
 async function pollLevels() {
@@ -263,55 +309,114 @@ async function pollLevels() {
     const out = l ? Math.min(1, l.out_peak) : 0;
     $("meter-mic").style.width = Math.round(Math.sqrt(mic) * 100) + "%";
     $("meter-out").style.width = Math.round(Math.sqrt(out) * 100) + "%";
+    $("meter-mic-v").textContent = l ? (mic > 0.001 ? Math.round(20 * Math.log10(mic)) : "-inf") : "off";
+    $("meter-out-v").textContent = l ? (out > 0.001 ? Math.round(20 * Math.log10(out)) : "-inf") : "off";
+    $("status-drift").textContent = l ? `drift ${l.drift_ppm} ppm` : "";
   } catch (_) {
     /* engine gone */
   }
-  // progress bars
   const now = performance.now();
   for (const [id, p] of playing) {
     const el = document.querySelector(`.tile[data-id="${id}"]`);
-    if (!el) continue;
     const frac = Math.min(1, (now - p.start) / (p.dur || 1));
-    el.querySelector(".progress").style.width = frac * 100 + "%";
+    if (el) el.querySelector(".bar").style.width = frac * 100 + "%";
     if (frac >= 1) {
       playing.delete(id);
-      el.classList.remove("playing");
-      el.querySelector(".progress").style.width = "0";
+      if (el) {
+        el.classList.remove("playing");
+        el.querySelector(".bar").style.width = "0";
+      }
+      if (playing.size === 0) setNow(null);
     }
   }
+}
+
+function setNow(clip) {
+  const n = $("now");
+  if (!clip) {
+    n.innerHTML = '<span class="l">Now playing</span><span class="n">Nothing</span><span class="d">Press a tile or its hotkey</span>';
+    return;
+  }
+  n.innerHTML = '<span class="l">Now playing</span><span class="n"></span><span class="d"></span>';
+  n.querySelector(".n").textContent = clip.name;
+  n.querySelector(".d").textContent = fmtDur(clip.duration_secs) + (clip.hotkey ? "   " + prettyHotkey(clip.hotkey) : "");
 }
 
 // ---------------------------------------------------------------------------------------------
 // Library grid
 // ---------------------------------------------------------------------------------------------
-function renderGrid() {
+function visibleClips() {
   const q = $("search").value.trim().toLowerCase();
+  return config.clips.filter((c) => {
+    if (q && !c.name.toLowerCase().includes(q)) return false;
+    if (filter === "imported") return !!c.source_url;
+    if (filter === "hotkeys") return !!c.hotkey;
+    if (filter.startsWith("color:")) return (c.color || "") === filter.slice(6);
+    return true;
+  });
+}
+
+function renderChips() {
+  const chips = $("chips");
+  chips.innerHTML = "";
+  const defs = [["all", "All"]];
+  if (config.clips.some((c) => c.source_url)) defs.push(["imported", "Imported"]);
+  if (config.clips.some((c) => c.hotkey)) defs.push(["hotkeys", "With hotkey"]);
+  for (const col of COLORS.slice(1)) if (config.clips.some((c) => c.color === col)) defs.push(["color:" + col, ""]);
+  for (const [key, label] of defs) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.setAttribute("aria-pressed", String(filter === key));
+    if (label) b.textContent = label;
+    else {
+      b.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + key.slice(6) + '"></span>';
+      b.title = "Colour";
+    }
+    b.addEventListener("click", () => {
+      filter = key;
+      renderChips();
+      renderGrid();
+    });
+    chips.appendChild(b);
+  }
+}
+
+function renderGrid() {
   const grid = $("grid");
   grid.innerHTML = "";
-  const clips = config.clips.filter((c) => !q || c.name.toLowerCase().includes(q));
-  $("clip-count").textContent = `${clips.length} of ${config.clips.length} clips`;
+  const clips = visibleClips();
   $("empty").classList.toggle("hidden", config.clips.length > 0);
+  $("search").placeholder = `Search ${config.clips.length} clips`;
   for (const c of clips) {
-    const t = document.createElement("div");
+    const t = document.createElement("button");
+    t.type = "button";
     t.className = "tile" + (playing.has(c.id) ? " playing" : "");
     t.dataset.id = c.id;
-    if (c.color) t.style.setProperty("--tile", c.color);
-    t.innerHTML = `
-      <div class="title"></div>
-      <div class="meta"><span class="dur"></span><span class="key"></span></div>
-      <button class="edit" title="Edit">...</button>
-      <div class="progress"></div>`;
-    t.querySelector(".title").textContent = c.name;
+    t.setAttribute("role", "listitem");
+    if (c.color) t.style.setProperty("--c", c.color);
+    t.innerHTML =
+      '<span class="tint"></span><span class="stripe"></span>' +
+      (c.thumbnail ? '<span class="thumb"></span>' : "") +
+      '<span class="t"></span><span class="m"><span class="dur"></span><span class="k"></span></span>' +
+      '<span class="edit" title="Edit"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>' +
+      '<span class="bar"></span>';
+    if (c.thumbnail) t.querySelector(".thumb").style.backgroundImage = `url("${c.thumbnail}")`;
+    t.querySelector(".t").textContent = c.name;
     t.querySelector(".dur").textContent = fmtDur(c.duration_secs);
-    const key = t.querySelector(".key");
-    if (c.hotkey) key.textContent = prettyHotkey(c.hotkey);
-    else key.remove();
+    const k = t.querySelector(".k");
+    if (c.hotkey) k.textContent = prettyHotkey(c.hotkey);
+    else k.remove();
     t.addEventListener("click", (e) => {
-      if (e.target.closest(".edit")) return;
+      if (e.target.closest(".edit")) {
+        e.stopPropagation();
+        openEditor(c);
+        return;
+      }
       playClip(c);
     });
-    t.querySelector(".edit").addEventListener("click", (e) => {
-      e.stopPropagation();
+    t.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
       openEditor(c);
     });
     grid.appendChild(t);
@@ -323,13 +428,12 @@ function clearPlayingTiles() {
     const el = document.querySelector(`.tile[data-id="${id}"]`);
     if (el) {
       el.classList.remove("playing");
-      el.querySelector(".progress").style.width = "0";
+      el.querySelector(".bar").style.width = "0";
     }
   }
   playing.clear();
+  setNow(null);
 }
-
-// Marks a tile as playing. Called for clicks and for hotkeys (via the clip-started event).
 function markStarted(id, exclusive) {
   const c = config.clips.find((x) => x.id === id);
   if (!c) return;
@@ -337,8 +441,8 @@ function markStarted(id, exclusive) {
   playing.set(c.id, { start: performance.now(), dur: c.duration_secs * 1000 });
   const el = document.querySelector(`.tile[data-id="${c.id}"]`);
   if (el) el.classList.add("playing");
+  setNow(c);
 }
-
 async function playClip(c) {
   try {
     await invoke("play", { id: c.id });
@@ -347,14 +451,9 @@ async function playClip(c) {
   }
 }
 
-let adding = false;
-
 async function addPaths(paths) {
   if (!paths || paths.length === 0) return;
-  if (adding) {
-    showBanner("Still adding the previous batch, one moment.", "");
-    return;
-  }
+  if (adding) return showBanner("Still adding the previous batch, one moment.", "");
   adding = true;
   $("btn-add-files").disabled = true;
   $("btn-add-folder").disabled = true;
@@ -362,6 +461,7 @@ async function addPaths(paths) {
   try {
     config = await invoke("add_clips", { paths });
     showBanner("");
+    renderChips();
     renderGrid();
   } catch (e) {
     showBanner("Could not add clips: " + e, "err");
@@ -372,23 +472,9 @@ async function addPaths(paths) {
   }
 }
 
-function bindProgress() {
-  tauri.event.listen("library-progress", (ev) => {
-    const p = ev.payload;
-    if (!p || !adding) return;
-    if (p.done >= p.total) showBanner(`Added ${p.total} clips, decoding in the background.`, "");
-    else showBanner(`Adding clips: ${p.done + 1} of ${p.total}  (${p.name})`, "");
-  });
-}
-
 function bindLibrary() {
   $("btn-add-files").addEventListener("click", async () => {
-    const sel = await tauri.dialog.open({
-      multiple: true,
-      directory: false,
-      title: "Add clips",
-      filters: [{ name: "Audio", extensions: AUDIO_EXTS }],
-    });
+    const sel = await tauri.dialog.open({ multiple: true, directory: false, title: "Add clips", filters: [{ name: "Audio", extensions: AUDIO_EXTS }] });
     if (sel) await addPaths(Array.isArray(sel) ? sel : [sel]);
   });
   $("btn-add-folder").addEventListener("click", async () => {
@@ -400,11 +486,6 @@ function bindLibrary() {
     await invoke("stop_all");
     clearPlayingTiles();
   });
-  tauri.event.listen("clip-started", (ev) => {
-    const p = ev.payload || {};
-    markStarted(p.id, !!p.exclusive);
-  });
-  tauri.event.listen("clips-stopped", () => clearPlayingTiles());
   $("btn-tone").addEventListener("click", async () => {
     try {
       await invoke("play_test_tone");
@@ -416,23 +497,41 @@ function bindLibrary() {
     if (status && status.running) {
       status = await invoke("engine_stop");
       renderStatus();
-    } else {
-      await startEngine();
-    }
+    } else await startEngine();
   });
 
-  // Drag and drop from Explorer (Tauri delivers real paths through this event).
   tauri.event.listen("tauri://drag-drop", (ev) => {
     const paths = ev.payload && ev.payload.paths;
     if (paths) addPaths(paths);
   });
+  tauri.event.listen("library-progress", (ev) => {
+    const p = ev.payload;
+    if (!p || !adding) return;
+    if (p.done >= p.total) showBanner(`Added ${p.total} clips, decoding in the background.`, "");
+    else showBanner(`Adding clips: ${p.done + 1} of ${p.total}  (${p.name})`, "");
+  });
+  tauri.event.listen("clip-started", (ev) => {
+    const p = ev.payload || {};
+    markStarted(p.id, !!p.exclusive);
+  });
+  tauri.event.listen("clips-stopped", () => clearPlayingTiles());
 
-  // Keyboard: digits 1-9 play the first nine visible tiles, Space stops all.
+  // Keyboard: digits 1-9 play the first nine visible tiles, Space stops all, Ctrl+K palette, Esc closes.
   document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      openPalette();
+      return;
+    }
+    if (e.key === "Escape") {
+      closePalette();
+      $("modal").classList.add("hidden");
+      return;
+    }
     if (e.target.matches("input, select, textarea")) return;
-    if (!$("modal").classList.contains("hidden")) return;
+    if (!$("modal").classList.contains("hidden") || !$("palette").classList.contains("hidden")) return;
     if (e.key >= "1" && e.key <= "9") {
-      const tiles = [...document.querySelectorAll(".tile")];
+      const tiles = [...document.querySelectorAll("#view-board .tile")];
       const t = tiles[parseInt(e.key, 10) - 1];
       if (t) t.click();
     } else if (e.key === " ") {
@@ -443,63 +542,123 @@ function bindLibrary() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Time helpers and URL import
+// Command palette
 // ---------------------------------------------------------------------------------------------
-// "1:23", "83", "1:02:03" -> seconds; empty -> null
-function parseTime(s) {
-  s = (s || "").trim();
-  if (!s) return null;
-  const parts = s.split(":").map((p) => parseFloat(p));
-  if (parts.some((p) => Number.isNaN(p))) return null;
-  return parts.reduce((acc, p) => acc * 60 + p, 0);
+let palSel = 0;
+function openPalette() {
+  $("palette").classList.remove("hidden");
+  const input = $("palette-input");
+  input.value = "";
+  palSel = 0;
+  fillPalette("");
+  input.focus();
 }
-
-function fmtTime(s) {
-  if (s == null) return "";
-  const m = Math.floor(s / 60);
-  const r = s - m * 60;
-  return `${m}:${r < 10 ? "0" : ""}${r.toFixed(r % 1 ? 1 : 0)}`;
+function closePalette() {
+  $("palette").classList.add("hidden");
 }
-
-let ytInfo = null;
-
-async function refreshTools() {
-  const t = await invoke("tools_status");
-  const el = $("yt-tools");
-  if (t.ready) {
-    el.innerHTML = "";
-    el.textContent = `yt-dlp ${t.ytdlp_version || ""} and ${t.deno_version || "deno"} ready. `;
-    const upd = document.createElement("a");
-    upd.href = "#";
-    upd.textContent = "Check for update";
-    upd.addEventListener("click", async (e) => {
-      e.preventDefault();
-      showBanner("Updating yt-dlp...", "");
-      try {
-        const out = await invoke("tools_update");
-        showBanner(out.split("\n").pop(), "");
-        refreshTools();
-      } catch (err) {
-        showBanner("Update failed: " + err, "err");
-      }
+function fillPalette(q) {
+  const list = $("palette-list");
+  list.innerHTML = "";
+  const items = config.clips.filter((c) => !q || c.name.toLowerCase().includes(q)).slice(0, 8);
+  items.forEach((c, i) => {
+    const r = document.createElement("div");
+    r.className = "row";
+    if (i === palSel) r.setAttribute("aria-selected", "true");
+    r.innerHTML = '<span class="n"></span><span class="k"></span>';
+    r.querySelector(".n").textContent = c.name;
+    r.querySelector(".k").textContent = c.hotkey ? prettyHotkey(c.hotkey) : fmtDur(c.duration_secs);
+    r.addEventListener("click", () => {
+      closePalette();
+      playClip(c);
     });
-    el.appendChild(upd);
-    $("yt-install").classList.add("hidden");
-    $("yt-form").classList.remove("hidden");
-  } else {
-    const missing = [!t.ytdlp_path && "yt-dlp (downloader)", !t.deno_path && "Deno (JavaScript runtime YouTube requires)"].filter(Boolean);
-    el.textContent = `Needs ${missing.join(" and ")}. Fetched from their official GitHub releases and checked against the published SHA-256.`;
-    $("yt-install").classList.remove("hidden");
-    $("yt-form").classList.add("hidden");
+    list.appendChild(r);
+  });
+}
+function bindPalette() {
+  const input = $("palette-input");
+  input.addEventListener("input", () => {
+    palSel = 0;
+    fillPalette(input.value.trim().toLowerCase());
+  });
+  input.addEventListener("keydown", (e) => {
+    const rows = $("palette-list").children;
+    if (e.key === "ArrowDown") {
+      palSel = Math.min(rows.length - 1, palSel + 1);
+      fillPalette(input.value.trim().toLowerCase());
+      e.preventDefault();
+    } else if (e.key === "ArrowUp") {
+      palSel = Math.max(0, palSel - 1);
+      fillPalette(input.value.trim().toLowerCase());
+      e.preventDefault();
+    } else if (e.key === "Enter") {
+      const r = rows[palSel];
+      if (r) r.click();
+    } else if (e.key === "Escape") closePalette();
+  });
+  $("palette").addEventListener("click", (e) => {
+    if (e.target === $("palette")) closePalette();
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hotkeys page
+// ---------------------------------------------------------------------------------------------
+function renderHotkeys() {
+  const list = $("hklist");
+  list.innerHTML = '<div class="hkrow hkhead"><span>Clip</span><span>Hotkey</span><span></span></div>';
+  for (const c of config.clips) {
+    const r = document.createElement("div");
+    r.className = "hkrow";
+    r.innerHTML = '<span class="n"></span><input type="text" class="keycap" readonly placeholder="click, then press keys" /><button type="button" class="btn small">Clear</button>';
+    r.querySelector(".n").textContent = c.name;
+    const input = r.querySelector("input");
+    setKeyInput(input, c.hotkey);
+    bindKeyCapture(input, r.querySelector("button"), async (h) => {
+      config = await invoke("update_clip", { entry: { ...c, hotkey: h } });
+      await applyHotkeys();
+      renderChips();
+      renderGrid();
+    });
+    list.appendChild(r);
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// URL import
+// ---------------------------------------------------------------------------------------------
+async function refreshTools() {
+  const t = await invoke("tools_status");
+  const text = t.ready ? `yt-dlp ${t.ytdlp_version || ""} and ${t.deno_version || "deno"} ready.` : "";
+  for (const id of ["yt-tools", "yt-tools-2"]) {
+    const el = $(id);
+    el.innerHTML = "";
+    if (t.ready) {
+      el.textContent = text + " ";
+      const upd = document.createElement("a");
+      upd.href = "#";
+      upd.textContent = "Check for update";
+      upd.addEventListener("click", async (e) => {
+        e.preventDefault();
+        showBanner("Updating yt-dlp...", "");
+        try {
+          const out = await invoke("tools_update");
+          showBanner(out.split("\n").pop(), "");
+          refreshTools();
+        } catch (err) {
+          showBanner("Update failed: " + err, "err");
+        }
+      });
+      el.appendChild(upd);
+    } else {
+      const missing = [!t.ytdlp_path && "yt-dlp (the downloader)", !t.deno_path && "Deno (the JavaScript runtime YouTube requires)"].filter(Boolean);
+      el.textContent = `Needs ${missing.join(" and ")}. Fetched from their official GitHub releases and checked against the published SHA-256.`;
+    }
+  }
+  $("yt-install").classList.toggle("hidden", t.ready);
+  $("yt-form").classList.toggle("hidden", !t.ready);
+}
+
 function bindYt() {
-  $("yt-cookies").value = config.yt_cookies_browser || "";
-  $("yt-cookies").addEventListener("change", async (e) => {
-    config.yt_cookies_browser = e.target.value || null;
-    await saveConfig();
-  });
   $("yt-install").addEventListener("click", async () => {
     $("yt-install").disabled = true;
     showBanner("Downloading yt-dlp and Deno, this takes a minute...", "");
@@ -508,12 +667,11 @@ function bindYt() {
       showBanner("");
       await refreshTools();
     } catch (e) {
-      showBanner("Could not install yt-dlp: " + e, "err");
+      showBanner("Could not install: " + e, "err");
     } finally {
       $("yt-install").disabled = false;
     }
   });
-
   $("yt-fetch").addEventListener("click", async () => {
     const url = $("yt-url").value.trim();
     if (!url) return;
@@ -522,7 +680,8 @@ function bindYt() {
     try {
       ytInfo = await invoke("yt_probe", { url });
       $("yt-title").textContent = ytInfo.title;
-      $("yt-meta").textContent = [ytInfo.uploader, ytInfo.duration_secs != null ? fmtTime(ytInfo.duration_secs) : null].filter(Boolean).join("  |  ");
+      $("yt-meta").textContent = [ytInfo.uploader, ytInfo.duration_secs != null ? fmtTime(ytInfo.duration_secs) : null].filter(Boolean).join("   ");
+      $("yt-thumb").src = ytInfo.thumbnail || "";
       $("yt-name").value = ytInfo.title;
       $("yt-start").value = "";
       $("yt-end").value = "";
@@ -534,13 +693,12 @@ function bindYt() {
       showBanner("Could not read that URL: " + e, "err");
     } finally {
       $("yt-fetch").disabled = false;
-      $("yt-fetch").textContent = "Fetch info";
+      $("yt-fetch").textContent = "Fetch";
     }
   });
   $("yt-url").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("yt-fetch").click();
   });
-
   $("yt-import").addEventListener("click", async () => {
     const url = $("yt-url").value.trim();
     if (!url) return;
@@ -551,19 +709,21 @@ function bindYt() {
     $("yt-import").disabled = true;
     showBanner("Starting download...", "");
     try {
-      config = await invoke("yt_import", { url, name: $("yt-name").value, start, end });
+      const name = $("yt-name").value;
+      config = await invoke("yt_import", { url, name, start, end });
+      renderChips();
       renderGrid();
-      showBanner(`Imported "${$("yt-name").value || (ytInfo && ytInfo.title) || "clip"}".`, "");
+      showBanner(`Imported "${name || (ytInfo && ytInfo.title) || "clip"}".`, "");
       $("yt-url").value = "";
       $("yt-info").classList.add("hidden");
       ytInfo = null;
+      showView("board");
     } catch (e) {
       showBanner("Import failed: " + e, "err");
     } finally {
       $("yt-import").disabled = false;
     }
   });
-
   tauri.event.listen("yt-progress", (ev) => {
     const p = ev.payload || {};
     if (p.percent >= 100) showBanner(p.text, "");
@@ -578,7 +738,7 @@ function openEditor(c) {
   editing = { ...c };
   $("edit-name").value = c.name;
   $("edit-gain").value = c.gain;
-  $("edit-gain-val").textContent = c.gain.toFixed(2);
+  $("edit-gain-val").textContent = db(c.gain);
   setKeyInput($("edit-hotkey"), c.hotkey);
   $("edit-start").value = c.trim_start ? fmtTime(c.trim_start) : "";
   $("edit-end").value = c.trim_end != null ? fmtTime(c.trim_end) : "";
@@ -589,7 +749,7 @@ function openEditor(c) {
   for (const col of COLORS) {
     const s = document.createElement("span");
     s.className = "swatch" + ((c.color || "") === col ? " sel" : "");
-    s.style.background = col || "var(--panel-2)";
+    s.style.background = col || "var(--layer-3)";
     s.addEventListener("click", () => {
       editing.color = col || null;
       [...sw.children].forEach((x) => x.classList.remove("sel"));
@@ -604,11 +764,9 @@ function openEditor(c) {
 function bindEditor() {
   $("edit-gain").addEventListener("input", (e) => {
     editing.gain = parseFloat(e.target.value);
-    $("edit-gain-val").textContent = editing.gain.toFixed(2);
+    $("edit-gain-val").textContent = db(editing.gain);
   });
-  bindKeyCapture($("edit-hotkey"), $("edit-hotkey-clear"), (h) => {
-    editing.hotkey = h;
-  });
+  bindKeyCapture($("edit-hotkey"), $("edit-hotkey-clear"), (h) => (editing.hotkey = h));
   $("edit-cancel").addEventListener("click", () => $("modal").classList.add("hidden"));
   $("edit-save").addEventListener("click", async () => {
     editing.name = $("edit-name").value.trim() || editing.name;
@@ -620,12 +778,14 @@ function bindEditor() {
     editing.trim_end = e;
     config = await invoke("update_clip", { entry: editing });
     $("modal").classList.add("hidden");
+    renderChips();
     renderGrid();
     await applyHotkeys();
   });
   $("edit-remove").addEventListener("click", async () => {
     config = await invoke("remove_clip", { id: editing.id });
     $("modal").classList.add("hidden");
+    renderChips();
     renderGrid();
     await applyHotkeys();
   });
@@ -638,21 +798,22 @@ function bindEditor() {
 // Boot
 // ---------------------------------------------------------------------------------------------
 async function main() {
+  bindWindow();
   config = await invoke("get_config");
-  renderSettings();
-  bindSettings();
+  renderMixer();
+  bindViews();
+  bindMixer();
   bindLibrary();
-  bindProgress();
+  bindPalette();
   bindEditor();
   bindYt();
-  refreshTools().catch(() => {});
-  await loadDevices();
+  renderChips();
   renderGrid();
+  setNow(null);
   await refreshStatus();
-  if (!status.running && config.autostart_engine && status.vb_cable_installed && !status.error) {
-    await startEngine();
-  }
+  if (!status.running && config.autostart_engine && status.vb_cable_installed && !status.error) await startEngine();
   await applyHotkeys();
+  refreshTools().catch(() => {});
   setInterval(pollLevels, 100);
   setInterval(refreshStatus, 3000);
 }

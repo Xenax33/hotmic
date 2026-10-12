@@ -12,11 +12,14 @@
       {
         "label": "main",
         "title": "Hotmic",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 800,
-        "minHeight": 520,
-        "dragDropEnabled": true
+        "width": 1120,
+        "height": 740,
+        "minWidth": 820,
+        "minHeight": 540,
+        "decorations": false,
+        "shadow": true,
+        "dragDropEnabled": true,
+        "backgroundColor": "#0b0c0e"
       }
     ],
     "security": {

@@ -7,81 +7,78 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="dot" id="engine-dot"></span>
-      <span class="name">Hotmic</span>
-      <span class="status" id="engine-status">starting</span>
-    </div>
-    <div class="meters">
-      <label>mic <span class="meter"><span id="meter-mic"></span></span></label>
-      <label>out <span class="meter"><span id="meter-out"></span></span></label>
-    </div>
-    <div class="actions">
-      <button id="btn-tone" title="Play a test tone">Test tone</button>
-      <button id="btn-stop" class="danger" title="Stop every playing clip">Stop all</button>
-      <button id="btn-engine">Stop engine</button>
+  <!-- Title bar (window has no native decorations) -->
+  <header class="titlebar" data-tauri-drag-region>
+    <span class="dot" id="engine-dot" data-tauri-drag-region></span>
+    <span class="brand" data-tauri-drag-region>Hotmic</span>
+    <span class="route" id="engine-route" data-tauri-drag-region>starting</span>
+    <span class="spacer" data-tauri-drag-region></span>
+    <div class="wc">
+      <button type="button" id="wc-min" title="Minimise" aria-label="Minimise"><svg viewBox="0 0 10 10"><path d="M0 5h10" /></svg></button>
+      <button type="button" id="wc-max" title="Maximise" aria-label="Maximise"><svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" /></svg></button>
+      <button type="button" id="wc-close" class="close" title="Close" aria-label="Close"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" /></svg></button>
     </div>
   </header>
 
-  <div id="banner" class="banner hidden"></div>
+  <div id="banner" class="banner hidden" role="status"></div>
 
-  <main class="layout">
-    <aside class="side">
-      <section>
-        <h2>Devices</h2>
-        <label>Microphone
-          <select id="sel-mic"></select>
-        </label>
-        <label>Send to (virtual cable)
-          <select id="sel-cable"></select>
-        </label>
-        <label>Monitor (hear clips yourself)
-          <select id="sel-monitor"></select>
-        </label>
-        <label class="row"><input type="checkbox" id="chk-monitor" /> Monitor on</label>
-        <button id="btn-apply-devices">Apply and restart engine</button>
-        <p class="hint">In Discord set <b>Input Device</b> to <b>CABLE Output</b>.</p>
-      </section>
+  <div class="body">
+    <!-- Left rail -->
+    <nav class="rail" aria-label="Sections">
+      <button type="button" data-view="board" aria-current="page" title="Board"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></button>
+      <button type="button" data-view="import" title="Import from URL"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+      <button type="button" data-view="hotkeys" title="Hotkeys"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg></button>
+      <span class="grow"></span>
+      <button type="button" data-view="settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+    </nav>
 
-      <section>
-        <h2>Levels</h2>
-        <label>Mic gain <span class="val" id="val-mic-gain"></span>
-          <input type="range" id="rng-mic-gain" min="0" max="2" step="0.05" />
+    <!-- Board -->
+    <main class="view" id="view-board">
+      <div class="toolbar">
+        <label class="search">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.6" y2="16.6"/></svg>
+          <input id="search" type="search" placeholder="Search clips" aria-label="Search clips" />
+          <kbd>Ctrl K</kbd>
         </label>
-        <label>Clip gain <span class="val" id="val-clip-gain"></span>
-          <input type="range" id="rng-clip-gain" min="0" max="2" step="0.05" />
-        </label>
-        <label>Mic while clip plays <span class="val" id="val-duck"></span>
-          <input type="range" id="rng-duck" min="0" max="1" step="0.05" />
-        </label>
-        <label class="row"><input type="checkbox" id="chk-normalize" /> Normalise clip loudness</label>
-      </section>
+        <div class="chips" id="chips" role="group" aria-label="Filter"></div>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btn-add-files"><svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add files</button>
+        <button type="button" class="btn" id="btn-add-folder">Add folder</button>
+        <button type="button" class="btn primary" id="btn-go-import"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Import URL</button>
+      </div>
+      <div class="grid" id="grid" role="list"></div>
+      <div class="empty hidden" id="empty">
+        <p class="big">No clips yet</p>
+        <p>Add files, drop them onto the window, or import from a URL.</p>
+      </div>
+    </main>
 
-      <section>
-        <h2>Playback</h2>
-        <label class="row"><input type="radio" name="mode" id="mode-replace" value="replace" /> New clip replaces the one playing</label>
-        <label class="row"><input type="radio" name="mode" id="mode-layer" value="layer" /> Clips play over each other</label>
-        <label>Stop all hotkey
-          <div class="keyrow">
-            <input type="text" id="key-stopall" class="keycap" readonly placeholder="click, then press keys" />
-            <button class="small" id="key-stopall-clear" title="Clear">x</button>
+    <!-- Import -->
+    <main class="view page hidden" id="view-import">
+      <h1>Import from a URL</h1>
+      <p class="sub">YouTube and most sites yt-dlp supports. The original audio track is saved, nothing is re-encoded. Trim here or later in the clip editor.</p>
+      <div class="tools" id="yt-tools"></div>
+      <button type="button" class="btn primary hidden" id="yt-install">Download yt-dlp and Deno (62 MB)</button>
+      <div id="yt-form" class="form">
+        <label>Video URL
+          <div class="inrow">
+            <input type="text" id="yt-url" placeholder="https://www.youtube.com/watch?v=..." />
+            <button type="button" class="btn" id="yt-fetch">Fetch</button>
           </div>
         </label>
-        <p class="hint">Hotkeys work while other apps are focused. Use a modifier (Ctrl, Alt) or numpad keys; a bare letter would block that key everywhere.</p>
-      </section>
-
-      <section>
-        <h2>Library</h2>
-        <button id="btn-add-files">Add files</button>
-        <button id="btn-add-folder">Add folder</button>
-        <p class="hint">Or drop audio files onto the window.</p>
-      </section>
-
-      <section id="yt">
-        <h2>Import from YouTube</h2>
-        <div id="yt-tools" class="hint"></div>
-        <button id="yt-install" class="hidden">Download yt-dlp and Deno (62 MB)</button>
+        <div id="yt-info" class="card hidden">
+          <div class="thumbwrap"><img id="yt-thumb" alt="" /></div>
+          <div class="info">
+            <div class="title" id="yt-title"></div>
+            <div class="meta" id="yt-meta"></div>
+            <label>Clip name <input type="text" id="yt-name" /></label>
+            <div class="row2">
+              <label>Start <input type="text" id="yt-start" placeholder="0:00" /></label>
+              <label>End <input type="text" id="yt-end" placeholder="end" /></label>
+            </div>
+            <button type="button" class="btn primary" id="yt-import">Import</button>
+          </div>
+        </div>
         <label>Use my browser's YouTube login
           <select id="yt-cookies">
             <option value="">No (default)</option>
@@ -90,56 +87,101 @@
             <option value="firefox">Firefox</option>
             <option value="brave">Brave</option>
           </select>
+          <span class="hint">Only needed if YouTube starts asking you to sign in.</span>
         </label>
-        <div id="yt-form">
-          <label>Video URL
-            <input type="text" id="yt-url" placeholder="https://www.youtube.com/watch?v=..." />
-          </label>
-          <button id="yt-fetch">Fetch info</button>
-          <div id="yt-info" class="ytcard hidden">
-            <div class="yt-title" id="yt-title"></div>
-            <div class="hint" id="yt-meta"></div>
-            <label>Clip name <input type="text" id="yt-name" /></label>
-            <div class="row2">
-              <label>Start <input type="text" id="yt-start" placeholder="0:00" /></label>
-              <label>End <input type="text" id="yt-end" placeholder="end" /></label>
-            </div>
-            <button class="primary" id="yt-import">Import</button>
-          </div>
+      </div>
+    </main>
+
+    <!-- Hotkeys -->
+    <main class="view page hidden" id="view-hotkeys">
+      <h1>Hotkeys</h1>
+      <p class="sub">Global. They work while Discord or a game has focus. Use a modifier or numpad keys; a bare letter would steal that key from every app.</p>
+      <div class="form">
+        <label>Stop all
+          <div class="keyrow"><input type="text" id="key-stopall" class="keycap" readonly placeholder="click, then press keys" /><button type="button" class="btn small" id="key-stopall-clear">Clear</button></div>
+        </label>
+      </div>
+      <div class="hklist" id="hklist"></div>
+    </main>
+
+    <!-- Settings -->
+    <main class="view page hidden" id="view-settings">
+      <h1>Settings</h1>
+      <section>
+        <h2>Audio devices</h2>
+        <div class="form">
+          <label>Microphone <select id="sel-mic"></select></label>
+          <label>Send to <select id="sel-cable"></select><span class="hint">The virtual cable. In Discord choose CABLE Output as the input device.</span></label>
+          <label>Monitor <select id="sel-monitor"></select><span class="hint">Where you hear the clips yourself. Your voice is never monitored.</span></label>
+          <button type="button" class="btn primary" id="btn-apply-devices">Apply and restart engine</button>
         </div>
-        <p class="hint">Saves the original audio track (no re-encode). Trim with m:ss or seconds. Works for any site yt-dlp supports.</p>
       </section>
+      <section>
+        <h2>Behaviour</h2>
+        <div class="form">
+          <label class="row"><input type="checkbox" id="chk-autostart" /> Start the engine when Hotmic opens</label>
+          <label class="row"><input type="checkbox" id="chk-block-voice" /> Mute my voice entirely while a clip plays</label>
+        </div>
+      </section>
+      <section>
+        <h2>Downloader</h2>
+        <div class="form"><div class="tools" id="yt-tools-2"></div></div>
+      </section>
+      <section>
+        <h2>About</h2>
+        <p class="hint">Hotmic 0.1.0. Open source, MIT. Icons by Lucide (ISC). Audio via VB-Cable, downloads via yt-dlp and Deno.</p>
+      </section>
+    </main>
+
+    <!-- Mixer rail -->
+    <aside class="side" id="side" aria-label="Mixer">
+      <div>
+        <h3>Live</h3>
+        <div class="meters">
+          <div class="meter"><span>Mic</span><span class="track"><i id="meter-mic"></i></span><span id="meter-mic-v">off</span></div>
+          <div class="meter"><span>Out</span><span class="track"><i id="meter-out"></i></span><span id="meter-out-v">off</span></div>
+        </div>
+      </div>
+      <div class="now" id="now"><span class="l">Now playing</span><span class="n">Nothing</span><span class="d">Press a tile or its hotkey</span></div>
+      <div>
+        <h3>Mix</h3>
+        <div class="faders">
+          <div class="fader"><div class="row"><span>Mic gain</span><span class="v" id="val-mic-gain"></span></div><input type="range" id="rng-mic-gain" min="0" max="2" step="0.05" aria-label="Mic gain" /></div>
+          <div class="fader"><div class="row"><span>Clip gain</span><span class="v" id="val-clip-gain"></span></div><input type="range" id="rng-clip-gain" min="0" max="2" step="0.05" aria-label="Clip gain" /></div>
+          <div class="fader"><div class="row"><span>Mic while a clip plays</span><span class="v" id="val-duck"></span></div><input type="range" id="rng-duck" min="0" max="1" step="0.05" aria-label="Duck" /></div>
+        </div>
+      </div>
+      <div class="toggles">
+        <div class="toggle"><span>Hear clips in monitor</span><button type="button" class="sw" id="sw-monitor" role="switch" aria-checked="false"></button></div>
+        <div class="toggle"><span>New clip replaces playing</span><button type="button" class="sw" id="sw-replace" role="switch" aria-checked="false"></button></div>
+        <div class="toggle"><span>Normalise loudness</span><button type="button" class="sw" id="sw-normalize" role="switch" aria-checked="false"></button></div>
+      </div>
+      <div class="side-actions">
+        <button type="button" class="btn" id="btn-tone">Test tone</button>
+        <button type="button" class="btn danger" id="btn-stop">Stop all<kbd id="stop-kbd"></kbd></button>
+      </div>
     </aside>
+  </div>
 
-    <section class="grid-wrap">
-      <div class="grid-head">
-        <input type="search" id="search" placeholder="Search clips" />
-        <span class="count" id="clip-count"></span>
-      </div>
-      <div class="grid" id="grid"></div>
-      <div class="empty hidden" id="empty">
-        <p>No clips yet.</p>
-        <p>Click <b>Add files</b> or drop MP3, WAV, OGG or FLAC files here.</p>
-      </div>
-    </section>
-  </main>
+  <footer class="status">
+    <span class="live" id="status-live">starting</span>
+    <span id="status-rate"></span>
+    <span id="status-drift"></span>
+    <span class="spacer"></span>
+    <span id="status-hint">Discord input: CABLE Output</span>
+    <button type="button" class="linkish" id="btn-engine">Stop engine</button>
+  </footer>
 
+  <!-- Clip editor -->
   <div class="modal hidden" id="modal">
     <div class="modal-card">
       <h3>Edit clip</h3>
       <label>Name <input type="text" id="edit-name" /></label>
-      <label>Gain <span class="val" id="edit-gain-val"></span>
-        <input type="range" id="edit-gain" min="0" max="2" step="0.05" />
-      </label>
+      <label>Gain <span class="v" id="edit-gain-val"></span><input type="range" id="edit-gain" min="0" max="2" step="0.05" /></label>
       <label>Hotkey
-        <div class="keyrow">
-          <input type="text" id="edit-hotkey" class="keycap" readonly placeholder="click, then press keys" />
-          <button class="small" id="edit-hotkey-clear" title="Clear">x</button>
-        </div>
+        <div class="keyrow"><input type="text" id="edit-hotkey" class="keycap" readonly placeholder="click, then press keys" /><button type="button" class="btn small" id="edit-hotkey-clear">Clear</button></div>
       </label>
-      <label>Colour
-        <div class="swatches" id="edit-colors"></div>
-      </label>
+      <label>Colour <div class="swatches" id="edit-colors"></div></label>
       <div class="row2">
         <label>Start <input type="text" id="edit-start" placeholder="0:00" /></label>
         <label>End <input type="text" id="edit-end" placeholder="end" /></label>
@@ -147,11 +189,19 @@
       <p class="hint" id="edit-full"></p>
       <p class="path" id="edit-path"></p>
       <div class="modal-actions">
-        <button class="danger" id="edit-remove">Remove</button>
+        <button type="button" class="btn danger" id="edit-remove">Remove</button>
         <span class="spacer"></span>
-        <button id="edit-cancel">Cancel</button>
-        <button class="primary" id="edit-save">Save</button>
+        <button type="button" class="btn" id="edit-cancel">Cancel</button>
+        <button type="button" class="btn primary" id="edit-save">Save</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Command palette -->
+  <div class="palette hidden" id="palette">
+    <div class="box">
+      <div class="in"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.6" y2="16.6"/></svg><input id="palette-input" placeholder="Play a clip by name" aria-label="Play a clip by name" /></div>
+      <div class="list" id="palette-list"></div>
     </div>
   </div>
 
