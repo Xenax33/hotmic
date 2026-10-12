@@ -138,8 +138,11 @@ yt-dlp + Deno, non-destructive trim.
 4. **First-run wizard.** Done 2026-10-12: VB-Cable check, default-output check, engine
    self-test that plays a tone and measures CABLE Output, Discord step. Re-runnable from
    Settings.
-5. **Auto push-to-talk.** Hold the user's Discord PTT key for the duration of a clip (SendInput),
-   defeating voice-activity gating. Shares the keyboard layer with item 6.
+5. **Auto push-to-talk.** Done 2026-10-12: Settings toggle plus key capture (keyboard key or
+   mouse side button), SendInput hold while any voice is active, 200 ms release tail, key
+   released on exit. Verified with GetAsyncKeyState during a hotkey-triggered clip.
+   Also done: `.github/workflows/release.yml` builds the NSIS installer on a `v*` tag and
+   publishes a GitHub Release with SHA256SUMS; `ci.yml` runs tests on every push.
 6. **Layer-key and hot-mode hotkeys.** Bare keys that only fire while a layer key is held or hot
    mode is toggled; low-level keyboard hook.
 7. **Clip polish.** Waveform with drag handles for trim, fade in/out, thumbnails on imported

@@ -28,6 +28,23 @@ Decoded clips (RAM) -----------+                                                
 v1 depends on [VB-Cable](https://vb-audio.com/Cable/) for the virtual microphone device. The
 app itself does the mic passthrough and mixing, so no Windows "Listen to this device" hacks.
 
+## Install
+
+Download `Hotmic_<version>_x64-setup.exe` from the
+[latest release](https://github.com/Xenax33/hotmic/releases/latest) and run it. The installer is
+not code-signed yet, so Windows SmartScreen will ask you to confirm. Then install
+[VB-Cable](https://vb-audio.com/Cable/) and follow the setup check that Hotmic opens on first run.
+
+## Releasing
+
+Push a version tag and GitHub Actions builds the installer and publishes the release:
+
+```powershell
+git tag -a v0.2.0 -m "Hotmic 0.2.0"; git push origin v0.2.0
+```
+
+Bump `version` in `crates/hotmic-app/tauri.conf.json` and the workspace `Cargo.toml` first.
+
 ## Building
 
 Rust on Windows targets MSVC, so you need the Visual C++ build tools and the Windows SDK once:
