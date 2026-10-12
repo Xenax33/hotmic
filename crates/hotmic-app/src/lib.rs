@@ -107,6 +107,8 @@ pub struct Config {
     pub close_to_tray: bool,
     /// When launched by Windows at login, start hidden in the tray.
     pub start_minimized: bool,
+    /// The first-run setup check has been completed or dismissed.
+    pub setup_done: bool,
     pub clips: Vec<ClipEntry>,
 }
 
@@ -130,6 +132,7 @@ impl Default for Config {
             yt_cookies_browser: None,
             close_to_tray: true,
             start_minimized: true,
+            setup_done: false,
             clips: Vec::new(),
         }
     }
@@ -905,6 +908,71 @@ fn play_test_tone(state: State<AppState>) -> Result<u64, String> {
     Ok(e.play(Arc::new(Clip::tone(440.0, 1.0))))
 }
 
+// ---- First-run setup checks ------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SetupChecks {
+    pub vb_cable_installed: bool,
+    pub default_output_name: Option<String>,
+    pub default_output_is_cable: bool,
+    pub default_input_name: Option<String>,
+    pub engine_running: bool,
+    pub engine_error: Option<String>,
+}
+
+#[tauri::command]
+fn setup_checks(state: State<AppState>) -> SetupChecks {
+    let list = devices::list().unwrap_or_default();
+    let out = list.iter().find(|d| d.is_output && d.is_default_output);
+    let inp = list.iter().find(|d| d.is_input && d.is_default_input);
+    let status = state.status();
+    SetupChecks {
+        vb_cable_installed: status.vb_cable_installed,
+        default_output_name: out.map(|d| d.name.clone()),
+        default_output_is_cable: out.map(|d| d.name.contains("CABLE")).unwrap_or(false),
+        default_input_name: inp.map(|d| d.name.clone()),
+        engine_running: status.running,
+        engine_error: status.error,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SelfTest {
+    pub peak: f32,
+    pub pass: bool,
+    pub message: String,
+}
+
+/// Play a tone through the engine into the cable and listen on CABLE Output, the device the
+/// call app will use. Proves the whole path without needing a second person.
+#[tauri::command]
+async fn setup_selftest(app: AppHandle) -> Result<SelfTest, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<AppState>();
+        {
+            let engine = lock(&state.engine);
+            let e = engine
+                .as_ref()
+                .ok_or_else(|| "engine is not running".to_string())?;
+            e.play(Arc::new(Clip::tone(440.0, 1.2)));
+        }
+        let peak = devices::measure_peak("CABLE Output", 1.5).map_err(|e| format!("{e:#}"))?;
+        let pass = peak > 0.05;
+        Ok(SelfTest {
+            peak,
+            pass,
+            message: if pass {
+                format!("The tone arrived on CABLE Output (peak {:.0}%). Discord will hear Hotmic.", peak * 100.0)
+            } else {
+                format!("Nothing arrived on CABLE Output (peak {:.1}%). Check that Send to is CABLE Input.", peak * 100.0)
+            },
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ---- Tray, autostart, lifecycle ---------------------------------------------------------------
 
 fn show_main(app: &AppHandle) {
@@ -1115,6 +1183,8 @@ pub fn run() {
             set_autostart,
             quit_app,
             hide_to_tray,
+            setup_checks,
+            setup_selftest,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hotmic");

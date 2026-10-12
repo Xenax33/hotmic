@@ -131,6 +131,10 @@
         </div>
       </section>
       <section>
+        <h2>Setup</h2>
+        <div class="form"><button type="button" class="btn" id="btn-wizard">Run the setup check</button></div>
+      </section>
+      <section>
         <h2>Downloader</h2>
         <div class="form"><div class="tools" id="yt-tools-2"></div></div>
       </section>
@@ -200,6 +204,25 @@
         <span class="spacer"></span>
         <button type="button" class="btn" id="edit-cancel">Cancel</button>
         <button type="button" class="btn primary" id="edit-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- First-run setup -->
+  <div class="modal hidden" id="wizard">
+    <div class="modal-card wizard">
+      <h3>Set up Hotmic</h3>
+      <p class="sub" style="margin-bottom:6px">Four checks. Green means ready.</p>
+      <ol class="steps">
+        <li id="step-cable"><span class="st"></span><div><b>VB-Cable installed</b><span class="hint" id="step-cable-hint"></span><div class="stepact"><a href="#" id="wiz-vb-link">Open the VB-Cable download page</a></div></div></li>
+        <li id="step-output"><span class="st"></span><div><b>Windows output is your headset, not the cable</b><span class="hint" id="step-output-hint"></span></div></li>
+        <li id="step-engine"><span class="st"></span><div><b>Engine running into CABLE Input</b><span class="hint" id="step-engine-hint"></span><div class="stepact"><button type="button" class="btn small" id="wiz-selftest">Run self-test</button><span class="hint" id="wiz-selftest-result"></span></div></div></li>
+        <li id="step-discord"><span class="st"></span><div><b>Discord: Input Device set to CABLE Output</b><span class="hint">User Settings, Voice &amp; Video, Input Device. Krisp noise suppression will thin out music clips; speech clips pass.</span><div class="stepact"><label class="row"><input type="checkbox" id="wiz-discord-done" /> I've set this</label></div></div></li>
+      </ol>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="wiz-recheck">Check again</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn primary" id="wiz-finish">Finish</button>
       </div>
     </div>
   </div>

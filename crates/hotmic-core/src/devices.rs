@@ -111,3 +111,50 @@ pub fn find_vb_cable() -> Option<DeviceInfo> {
         .into_iter()
         .find(|d| d.is_output && d.name.contains(VB_CABLE_RENDER))
 }
+
+/// Record from an input device for `seconds` and return the peak absolute sample (0..1).
+/// Used by the setup self-test: play a tone into the cable, listen on "CABLE Output".
+pub fn measure_peak(spec: &str, seconds: f32) -> Result<f32> {
+    use cpal::traits::StreamTrait;
+    use cpal::{FromSample, Sample, SizedSample};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    let dev = find(spec, DeviceKind::Input)?;
+    let cfg = dev.default_input_config().context("input config")?;
+    let peak = Arc::new(AtomicU32::new(0));
+
+    fn build<T>(dev: &cpal::Device, cfg: cpal::StreamConfig, peak: Arc<AtomicU32>) -> Result<cpal::Stream>
+    where
+        T: SizedSample + Send + 'static,
+        f32: FromSample<T>,
+    {
+        let s = dev.build_input_stream(
+            cfg,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                let p = data
+                    .iter()
+                    .fold(0.0f32, |m, &s| m.max(f32::from_sample(s).abs()));
+                let cur = f32::from_bits(peak.load(Ordering::Relaxed));
+                if p > cur {
+                    peak.store(p.to_bits(), Ordering::Relaxed);
+                }
+            },
+            |e| log::warn!("measure_peak stream: {e}"),
+            None,
+        )?;
+        Ok(s)
+    }
+
+    let stream_cfg: cpal::StreamConfig = cfg.clone().into();
+    let stream = match cfg.sample_format() {
+        cpal::SampleFormat::F32 => build::<f32>(&dev, stream_cfg, peak.clone())?,
+        cpal::SampleFormat::I16 => build::<i16>(&dev, stream_cfg, peak.clone())?,
+        cpal::SampleFormat::I32 => build::<i32>(&dev, stream_cfg, peak.clone())?,
+        other => anyhow::bail!("unsupported sample format {other:?}"),
+    };
+    stream.play().context("starting measurement stream")?;
+    std::thread::sleep(std::time::Duration::from_secs_f32(seconds.clamp(0.2, 10.0)));
+    drop(stream);
+    Ok(f32::from_bits(peak.load(Ordering::Relaxed)))
+}

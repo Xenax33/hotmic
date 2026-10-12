@@ -820,6 +820,72 @@ function bindEditor() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// First-run setup wizard
+// ---------------------------------------------------------------------------------------------
+function setStep(id, state, hint) {
+  const li = $(id);
+  li.classList.remove("ok", "bad", "warn");
+  if (state) li.classList.add(state);
+  const h = $(id + "-hint");
+  if (h) h.textContent = hint || "";
+}
+
+async function runChecks() {
+  let c;
+  try {
+    c = await invoke("setup_checks");
+  } catch (e) {
+    showBanner("Setup check failed: " + e, "err");
+    return;
+  }
+  setStep("step-cable", c.vb_cable_installed ? "ok" : "bad", c.vb_cable_installed ? "Found CABLE Input and CABLE Output." : "Not found. Install it (free), reboot if asked, then check again.");
+  setStep(
+    "step-output",
+    c.default_output_is_cable ? "bad" : "ok",
+    c.default_output_is_cable
+      ? `Your default output is "${c.default_output_name}", so all Windows sound goes into the cable. In Sound settings pick your headset or speakers as output.`
+      : `Default output: ${c.default_output_name || "unknown"}.`
+  );
+  if (c.engine_running) setStep("step-engine", "ok", "Running. The self-test plays a tone and listens on CABLE Output, the device Discord uses.");
+  else setStep("step-engine", "bad", c.engine_error ? "Error: " + c.engine_error : "Not running. Start it from the status bar, or fix the device settings.");
+  setStep("step-discord", $("wiz-discord-done").checked ? "ok" : "warn", "");
+}
+
+function openWizard() {
+  $("wiz-selftest-result").textContent = "";
+  $("wizard").classList.remove("hidden");
+  runChecks();
+}
+
+function bindWizard() {
+  $("btn-wizard").addEventListener("click", openWizard);
+  $("wiz-recheck").addEventListener("click", runChecks);
+  $("wiz-vb-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    tauri.opener.openUrl("https://vb-audio.com/Cable/");
+  });
+  $("wiz-discord-done").addEventListener("change", (e) => setStep("step-discord", e.target.checked ? "ok" : "warn", ""));
+  $("wiz-selftest").addEventListener("click", async () => {
+    $("wiz-selftest").disabled = true;
+    $("wiz-selftest-result").textContent = "Playing a tone...";
+    try {
+      const r = await invoke("setup_selftest");
+      $("wiz-selftest-result").textContent = r.message;
+      setStep("step-engine", r.pass ? "ok" : "bad", "");
+    } catch (e) {
+      $("wiz-selftest-result").textContent = "Self-test failed: " + e;
+    } finally {
+      $("wiz-selftest").disabled = false;
+    }
+  });
+  $("wiz-finish").addEventListener("click", async () => {
+    config.setup_done = true;
+    await saveConfig();
+    $("wizard").classList.add("hidden");
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------------------------
 async function main() {
@@ -832,6 +898,7 @@ async function main() {
   bindPalette();
   bindEditor();
   bindYt();
+  bindWizard();
   renderChips();
   renderGrid();
   setNow(null);
@@ -839,6 +906,7 @@ async function main() {
   if (!status.running && config.autostart_engine && status.vb_cable_installed && !status.error) await startEngine();
   await applyHotkeys();
   refreshTools().catch(() => {});
+  if (!config.setup_done) openWizard();
   setInterval(pollLevels, 100);
   setInterval(refreshStatus, 3000);
 }
