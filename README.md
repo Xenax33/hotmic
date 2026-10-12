@@ -3,9 +3,10 @@
 A free, unlimited soundboard for Windows. Play any audio file into Discord, WhatsApp, Zoom or any
 other call while your microphone stays hot. Your voice and the clips are mixed, not swapped.
 
-Status: **Phase 2**. Routing is proven (see `spike/RESULTS.md`), the Rust engine plays clips over
-the live mic into VB-Cable, and a first Tauri desktop app wraps it: device picker, clip grid,
-gains, meters, loudness normalisation. No global hotkeys or YouTube import yet.
+Status: **usable daily**. The engine plays clips over the live mic into VB-Cable; the desktop app
+has a clip grid with global hotkeys, YouTube import (yt-dlp + Deno, no ffmpeg), loudness
+normalisation, non-destructive trim, a mixer rail, Ctrl+K palette, tray mode, start with
+Windows, a first-run setup check with a cable self-test, and an NSIS installer.
 
 Planned headline features: unlimited clips, import straight from a YouTube URL with a time
 range, bind any key to any clip, loudness normalisation, mic ducking, instant replay of the
@@ -54,7 +55,16 @@ cargo install tauri-cli --version "^2" --locked
 cargo run -p hotmic-app
 ```
 
-Settings and the clip library live in `%APPDATA%\dev.hotmic.app\config.json`.
+Settings and the clip library live in `%APPDATA%\dev.hotmic.app\config.json`. Downloaded tools
+(yt-dlp, Deno) live in `%LOCALAPPDATA%\hotmic\bin`. URL imports are saved to `Music\Hotmic`.
+
+Installer (NSIS, about 4 MB, needs the Tauri CLI):
+
+```powershell
+cd crates\hotmic-app; cargo tauri build
+```
+
+Output: `target\release\bundle\nsis\Hotmic_0.1.0_x64-setup.exe`.
 
 Crates:
 

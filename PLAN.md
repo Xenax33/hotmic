@@ -130,14 +130,14 @@ Done so far in Phase 2: devices, grid, gains, meters, loudness normalisation, gl
 (combo mode), replace/layer playback, Media Foundation decoder fallback, YouTube import with
 yt-dlp + Deno, non-destructive trim.
 
-1. **UI redesign.** The current UI is a functional placeholder. Target: a modern, sleek desktop
-   app that feels native on Windows 11. See section 11 for the research and chosen direction.
-2. **Tray mode and startup.** Close to tray, tray menu (Stop all, Quit), start with Windows,
-   engine keeps running while the window is hidden.
-3. **Installer.** `cargo tauri build` NSIS setup exe, GitHub Releases, later winget and
-   auto-update.
-4. **First-run wizard.** Detect VB-Cable, warn when the cable became the default output, show
-   the Discord input-device step, loopback self-test.
+1. **UI redesign.** Done 2026-10-12, "Quiet" skin (section 11).
+2. **Tray mode and startup.** Done 2026-10-12: close to tray, tray menu, single instance,
+   start with Windows with optional start-minimised.
+3. **Installer.** NSIS setup exe builds (`cargo tauri build`, 4 MB). Still to do: GitHub
+   Releases workflow, code signing (unsigned exe triggers SmartScreen), winget, auto-update.
+4. **First-run wizard.** Done 2026-10-12: VB-Cable check, default-output check, engine
+   self-test that plays a tone and measures CABLE Output, Discord step. Re-runnable from
+   Settings.
 5. **Auto push-to-talk.** Hold the user's Discord PTT key for the duration of a clip (SendInput),
    defeating voice-activity gating. Shares the keyboard layer with item 6.
 6. **Layer-key and hot-mode hotkeys.** Bare keys that only fire while a layer key is held or hot
