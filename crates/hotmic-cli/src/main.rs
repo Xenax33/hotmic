@@ -25,6 +25,13 @@ enum Cmd {
     Probe { files: Vec<PathBuf> },
     /// yt-dlp helpers: status, install, update, info <url>, get <url> [out_dir].
     Yt { args: Vec<String> },
+    /// Record from an input device for a few seconds and print the peak level.
+    Measure {
+        #[arg(default_value = "CABLE Output")]
+        device: String,
+        #[arg(default_value_t = 2.0)]
+        secs: f32,
+    },
     /// Run the engine: mic + clips into the cable. Keys: 1-9 play, T tone, 0 stop, M monitor, Q quit.
     Run {
         /// Mic device id or name substring. Default: system default input.
@@ -75,6 +82,11 @@ fn main() -> Result<()> {
         Cmd::Devices => cmd_devices(),
         Cmd::Probe { files } => cmd_probe(files),
         Cmd::Yt { args } => cmd_yt(args),
+        Cmd::Measure { device, secs } => {
+            let peak = devices::measure_peak(&device, secs)?;
+            println!("peak on {device} over {secs}s: {peak:.3}");
+            Ok(())
+        }
         Cmd::Run {
             mic,
             cable,
